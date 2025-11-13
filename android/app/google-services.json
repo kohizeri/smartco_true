@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "432631275949",
+    "project_id": "smartcollar-c69c1",
+    "storage_bucket": "smartcollar-c69c1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:432631275949:android:421796573a67e04e888124",
+        "android_client_info": {
+          "package_name": "com.example.smartcollar_mobileapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBUx1hPe3XS1i27kmui7bjKx65mevHP4Vw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

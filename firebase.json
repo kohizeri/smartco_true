@@ -1,0 +1,37 @@
+{
+  "functions": {
+    "source": "smartbase",
+    "runtime": "nodejs18",
+    "ignore": [
+      "node_modules",
+      ".git",
+      "firebase-debug.log",
+      "firebase-debug.*.log",
+      "*.local"
+    ],
+    "predeploy": [
+      "cd smartbase && npm run lint"
+    ]
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "smartcollar-c69c1",
+          "appId": "1:432631275949:android:421796573a67e04e888124",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "smartcollar-c69c1",
+          "configurations": {
+            "android": "1:432631275949:android:421796573a67e04e888124",
+            "ios": "1:432631275949:ios:4a73cae001034306888124",
+            "web": "1:432631275949:web:799f136049650531888124"
+          }
+        }
+      }
+    }
+  }
+}
