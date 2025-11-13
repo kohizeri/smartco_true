@@ -230,6 +230,55 @@ class _CommsPageState extends State<CommsPage> {
                   selectedTime!.minute,
                 );
 
+                // Check for overlapping confirmed appointments
+                final ownerRemindersRef = _database.ref(
+                  'users/$ownerUid/reminders',
+                );
+                final existingRemindersSnapshot = await ownerRemindersRef.get();
+                
+                if (existingRemindersSnapshot.exists && 
+                    existingRemindersSnapshot.value is Map) {
+                  final reminders = Map<dynamic, dynamic>.from(
+                    existingRemindersSnapshot.value as Map,
+                  );
+                  
+                  for (var reminder in reminders.values) {
+                    if (reminder is Map) {
+                      final reminderStatus = reminder['status']?.toString() ?? 'pending';
+                      final reminderPetName = reminder['petName']?.toString() ?? '';
+                      
+                      // Only check confirmed appointments for the same pet
+                      if (reminderStatus == 'confirmed' && 
+                          reminderPetName == petNameController.text.trim()) {
+                        final reminderDateTime = reminder['dateTime'];
+                        if (reminderDateTime != null) {
+                          final existingDateTime = DateTime.fromMillisecondsSinceEpoch(
+                            reminderDateTime is int 
+                              ? reminderDateTime 
+                              : int.tryParse(reminderDateTime.toString()) ?? 0,
+                          );
+                          
+                          // Check if appointments overlap (within 1 hour)
+                          final difference = dateTime.difference(existingDateTime).abs();
+                          if (difference.inMinutes < 60) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    'This pet already has a confirmed appointment at ${DateFormat('MMM dd, yyyy h:mm a').format(existingDateTime)}',
+                                  ),
+                                  backgroundColor: Colors.orange,
+                                ),
+                              );
+                            }
+                            return;
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+
                 // Format date and time for reminders.dart compatibility
                 final dateStr =
                     '${dateTime.year}-${dateTime.month.toString().padLeft(2, '0')}-${dateTime.day.toString().padLeft(2, '0')}';
@@ -265,6 +314,7 @@ class _CommsPageState extends State<CommsPage> {
                   'dateTime': dateTime.millisecondsSinceEpoch,
                   'createdAt': DateTime.now().millisecondsSinceEpoch,
                   'type': 'appointment', // Mark as appointment
+                  'status': 'pending', // Initial status
                 });
 
                 // Store reference in vet's appointments (users/{vetUid}/appointments)
@@ -279,6 +329,7 @@ class _CommsPageState extends State<CommsPage> {
                   'completed': false,
                   'createdAt': DateTime.now().millisecondsSinceEpoch,
                   'reminderKey': reminderKey, // Reference to owner's reminder
+                  'status': 'pending', // Initial status
                 });
 
                 if (mounted) {
@@ -511,6 +562,8 @@ class _Appointment {
   final bool completed;
   final int? completedAt;
   final String? reminderKey; // Reference to owner's reminder
+  final String status; // pending, confirmed, rejected
+  final String? rejectionReason;
 
   _Appointment({
     required this.id,
@@ -522,6 +575,8 @@ class _Appointment {
     required this.completed,
     this.completedAt,
     this.reminderKey,
+    this.status = 'pending',
+    this.rejectionReason,
   });
 
   factory _Appointment.fromMap(String id, Map<dynamic, dynamic> map) {
@@ -539,6 +594,8 @@ class _Appointment {
       completed: map['completed'] == true,
       completedAt: map['completedAt'] is int ? map['completedAt'] as int : null,
       reminderKey: map['reminderKey']?.toString(),
+      status: map['status']?.toString() ?? 'pending',
+      rejectionReason: map['rejectionReason']?.toString(),
     );
   }
 }
@@ -560,17 +617,43 @@ class _AppointmentCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isPast = appointment.dateTime.isBefore(DateTime.now());
     final isUpcoming = !appointment.completed && !isPast;
+    final isPending = appointment.status == 'pending';
+    final isConfirmed = appointment.status == 'confirmed';
+    final isRejected = appointment.status == 'rejected';
+
+    Color getBorderColor() {
+      if (appointment.completed) return Colors.grey.shade300;
+      if (isRejected) return Colors.red.shade200;
+      if (isPending) return Colors.orange.shade200;
+      if (isConfirmed) return Colors.green.shade200;
+      if (isPast) return Colors.orange.shade200;
+      return Colors.blue.shade200;
+    }
+
+    Color getIconColor() {
+      if (appointment.completed) return Colors.grey.shade300;
+      if (isRejected) return Colors.red.shade200;
+      if (isPending) return Colors.orange.shade200;
+      if (isConfirmed) return Colors.green.shade200;
+      if (isPast) return Colors.orange.shade200;
+      return Colors.blue.shade200;
+    }
+
+    IconData getIcon() {
+      if (appointment.completed) return Icons.check_circle;
+      if (isRejected) return Icons.cancel;
+      if (isPending) return Icons.schedule;
+      if (isConfirmed) return Icons.check_circle_outline;
+      if (isPast) return Icons.event_busy;
+      return Icons.event;
+    }
 
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: appointment.completed
-              ? Colors.grey.shade300
-              : isPast
-              ? Colors.orange.shade200
-              : Colors.blue.shade200,
+          color: getBorderColor(),
           width: 1.5,
         ),
         boxShadow: [
@@ -593,21 +676,19 @@ class _AppointmentCard extends StatelessWidget {
                   width: 48,
                   height: 48,
                   decoration: BoxDecoration(
-                    color: appointment.completed
-                        ? Colors.grey.shade300
-                        : isPast
-                        ? Colors.orange.shade200
-                        : Colors.blue.shade200,
+                    color: getIconColor(),
                     shape: BoxShape.circle,
                   ),
                   child: Icon(
-                    appointment.completed
-                        ? Icons.check_circle
-                        : isPast
-                        ? Icons.event_busy
-                        : Icons.event,
+                    getIcon(),
                     color: appointment.completed
                         ? Colors.grey.shade600
+                        : isRejected
+                        ? Colors.red.shade700
+                        : isPending
+                        ? Colors.orange.shade700
+                        : isConfirmed
+                        ? Colors.green.shade700
                         : isPast
                         ? Colors.orange.shade700
                         : Colors.blue.shade700,
@@ -641,6 +722,63 @@ class _AppointmentCard extends StatelessWidget {
                               ),
                               child: const Text(
                                 'Completed',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.green,
+                                ),
+                              ),
+                            )
+                          else if (isRejected)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.red.shade100,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Text(
+                                'Rejected',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.red,
+                                ),
+                              ),
+                            )
+                          else if (isPending)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.orange.shade100,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Text(
+                                'Pending',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.orange,
+                                ),
+                              ),
+                            )
+                          else if (isConfirmed)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.green.shade100,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Text(
+                                'Confirmed',
                                 style: TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w600,
@@ -724,6 +862,47 @@ class _AppointmentCard extends StatelessWidget {
                           fontSize: 13,
                           color: Colors.grey.shade800,
                         ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            if (isRejected && appointment.rejectionReason != null && appointment.rejectionReason!.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.red.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.red.shade200),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.info_outline, size: 16, color: Colors.red.shade700),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Rejection Reason:',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.red.shade700,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            appointment.rejectionReason!,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.red.shade900,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
