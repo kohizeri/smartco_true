@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import '../auth/login_screen.dart';
 import 'package:smartcollar_mobileapp/home/notif.dart';
 import 'notif_edit.dart';
@@ -27,10 +28,32 @@ class _SettingsPageState extends State<SettingsPage> {
 
   /// ✅ Fixed Logout
   void _logout(BuildContext context) async {
-    await FirebaseAuth.instance.signOut();
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (context) => const LoginScreen()),
-    );
+    try {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid != null) {
+        final fcmToken = await FirebaseMessaging.instance.getToken();
+        if (fcmToken != null) {
+          final database = FirebaseDatabase.instanceFor(
+            app: FirebaseAuth.instance.app,
+            databaseURL: _databaseURL,
+          );
+          await database
+              .ref('users/$uid/devices/$fcmToken/isOnline')
+              .set(false);
+          print("isOnline set to false for device $fcmToken");
+        }
+      }
+
+      await FirebaseAuth.instance.signOut();
+
+      if (context.mounted) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (context) => const LoginScreen()),
+        );
+      }
+    } catch (e) {
+      print("Error during logout: $e");
+    }
   }
 
   /// Load theme preference

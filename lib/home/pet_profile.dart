@@ -1,11 +1,6 @@
-import 'dart:io';
-import 'dart:typed_data';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 
 const String _databaseURL =
     'https://smartcollar-c69c1-default-rtdb.asia-southeast1.firebasedatabase.app';
@@ -21,14 +16,11 @@ class PetProfilePage extends StatefulWidget {
 
 class _PetProfilePageState extends State<PetProfilePage> {
   FirebaseDatabase get _database => FirebaseDatabase.instanceFor(
-        app: FirebaseAuth.instance.app,
-        databaseURL: _databaseURL,
-      );
+    app: FirebaseAuth.instance.app,
+    databaseURL: _databaseURL,
+  );
   Map<String, dynamic>? petData;
   bool isLoading = true;
-  final ImagePicker _picker = ImagePicker();
-  File? _imageFile;
-  Uint8List? _imageBytes; // for web preview
 
   final Map<String, List<String>> dogBreeds = {
     "Small": [
@@ -84,9 +76,7 @@ class _PetProfilePageState extends State<PetProfilePage> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
 
-    final petRef = _database.ref(
-      'users/$uid/pets/${widget.petId}',
-    );
+    final petRef = _database.ref('users/$uid/pets/${widget.petId}');
     final snapshot = await petRef.get();
 
     if (snapshot.exists) {
@@ -96,104 +86,16 @@ class _PetProfilePageState extends State<PetProfilePage> {
       });
     } else {
       setState(() => isLoading = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("Pet data not found.")));
-    }
-  }
-
-  Future<void> _pickImage(ImageSource source) async {
-    final pickedFile = await _picker.pickImage(
-      source: source,
-      imageQuality: 80,
-    );
-    if (pickedFile != null) {
-      if (kIsWeb) {
-        final bytes = await pickedFile.readAsBytes();
-        setState(() {
-          _imageBytes = bytes;
-          _imageFile = null; // ensure we don't use FileImage on web
-        });
-      } else {
-        setState(() {
-          _imageFile = File(pickedFile.path);
-          _imageBytes = null;
-        });
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("Pet data not found.")));
       }
-      await _uploadImage();
     }
-  }
-
-  Future<void> _uploadImage() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-    if (!kIsWeb && _imageFile == null) return;
-    if (kIsWeb && _imageBytes == null) return;
-
-    try {
-      final storageRef = FirebaseStorage.instance
-          .ref()
-          .child('pet_images')
-          .child(uid)
-          .child('${widget.petId}.jpg');
-
-      if (kIsWeb) {
-        await storageRef.putData(_imageBytes!);
-      } else {
-        await storageRef.putFile(_imageFile!);
-      }
-      final downloadUrl = await storageRef.getDownloadURL();
-
-      final petRef = _database.ref(
-        'users/$uid/pets/${widget.petId}',
-      );
-      // Save under both 'photoUrl' and 'image' for cross-screen compatibility
-      await petRef.update({'photoUrl': downloadUrl, 'image': downloadUrl});
-
-      setState(() {
-        petData?['photoUrl'] = downloadUrl;
-        petData?['image'] = downloadUrl;
-      });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Photo updated successfully!")),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text("Failed to upload image: $e")));
-    }
-  }
-
-  void _showImageOptions() {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Wrap(
-          children: [
-            ListTile(
-              leading: const Icon(Icons.camera_alt),
-              title: const Text("Take a Picture"),
-              onTap: () {
-                Navigator.pop(context);
-                _pickImage(ImageSource.camera);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text("Choose from Gallery"),
-              onTap: () {
-                Navigator.pop(context);
-                _pickImage(ImageSource.gallery);
-              },
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   void _showEditDialog() {
+    if (petData == null) return;
     final nameController = TextEditingController(text: petData?['name'] ?? '');
     final ageController = TextEditingController(
       text: petData?['age']?.toString() ?? '',
@@ -206,6 +108,14 @@ class _PetProfilePageState extends State<PetProfilePage> {
     String selectedSpecies = petData?['species'] ?? "Dog";
     String selectedBreed = petData?['breed'] ?? "";
 
+    // Ensure initial breed is valid for the species
+    final initialBreeds = selectedSpecies == "Dog"
+        ? dogBreeds.values.expand((b) => b).toList()
+        : catBreeds.values.expand((b) => b).toList();
+    if (!initialBreeds.contains(selectedBreed)) {
+      selectedBreed = ""; // Reset if breed doesn't match species
+    }
+
     showDialog(
       context: context,
       builder: (ctx) {
@@ -214,6 +124,12 @@ class _PetProfilePageState extends State<PetProfilePage> {
             final breeds = selectedSpecies == "Dog"
                 ? dogBreeds.values.expand((b) => b).toList()
                 : catBreeds.values.expand((b) => b).toList();
+
+            // Handle case where selectedBreed is not in the new breeds list
+            String? currentBreed =
+                selectedBreed.isNotEmpty && breeds.contains(selectedBreed)
+                ? selectedBreed
+                : null;
 
             return AlertDialog(
               title: const Text("Edit Pet Information"),
@@ -244,23 +160,30 @@ class _PetProfilePageState extends State<PetProfilePage> {
                         if (v != null) {
                           setState(() {
                             selectedSpecies = v;
-                            selectedBreed = "";
+                            // Reset breed when species changes
+                            currentBreed = null;
+                            selectedBreed = ""; // Clear selection
                           });
                         }
                       },
                     ),
                     DropdownButtonFormField<String>(
-                      value: selectedBreed.isNotEmpty
-                          ? selectedBreed
-                          : null, // avoid null error
+                      value: currentBreed,
+                      hint: const Text("Select Breed"),
                       decoration: const InputDecoration(labelText: "Breed"),
+                      isExpanded: true,
                       items: breeds
                           .map(
                             (b) => DropdownMenuItem(value: b, child: Text(b)),
                           )
                           .toList(),
                       onChanged: (v) {
-                        if (v != null) setState(() => selectedBreed = v);
+                        if (v != null) {
+                          setState(() {
+                            selectedBreed = v;
+                            currentBreed = v;
+                          });
+                        }
                       },
                     ),
                     DropdownButtonFormField<String>(
@@ -297,31 +220,37 @@ class _PetProfilePageState extends State<PetProfilePage> {
                     final petRef = _database.ref(
                       'users/$uid/pets/${widget.petId}',
                     );
-                    await petRef.update({
+
+                    final updates = {
                       "name": nameController.text.trim(),
                       "age": int.tryParse(ageController.text.trim()) ?? 0,
                       "species": selectedSpecies,
                       "breed": selectedBreed,
                       "gender": selectedGender,
                       "collarId": collarController.text.trim(),
+                    };
+
+                    await petRef.update(updates);
+
+                    // Update local state
+                    // Use a temporary map to avoid null issues on the main petData
+                    final updatedPetData = Map<String, dynamic>.from(petData!);
+                    updatedPetData.addAll(updates);
+
+                    // We must call the parent's setState to update the UI
+                    // (this dialog's setState only updates the dialog)
+                    this.setState(() {
+                      petData = updatedPetData;
                     });
 
-                    setState(() {
-                      petData?['name'] = nameController.text.trim();
-                      petData?['age'] =
-                          int.tryParse(ageController.text.trim()) ?? 0;
-                      petData?['species'] = selectedSpecies;
-                      petData?['breed'] = selectedBreed;
-                      petData?['gender'] = selectedGender;
-                      petData?['collarId'] = collarController.text.trim();
-                    });
-
-                    Navigator.pop(ctx);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text("Pet info updated successfully"),
-                      ),
-                    );
+                    if (mounted) {
+                      Navigator.pop(ctx);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text("Pet info updated successfully"),
+                        ),
+                      );
+                    }
                   },
                   child: const Text("Save"),
                 ),
@@ -343,7 +272,7 @@ class _PetProfilePageState extends State<PetProfilePage> {
         title: const Text("Add / Update Weight"),
         content: TextField(
           controller: weightController,
-          keyboardType: TextInputType.number,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
           decoration: const InputDecoration(labelText: "Weight (kg)"),
         ),
         actions: [
@@ -356,17 +285,27 @@ class _PetProfilePageState extends State<PetProfilePage> {
               final uid = FirebaseAuth.instance.currentUser?.uid;
               if (uid == null) return;
 
-              final petRef = _database.ref(
-                'users/$uid/pets/${widget.petId}',
-              );
+              final petRef = _database.ref('users/$uid/pets/${widget.petId}');
               final weight = double.tryParse(weightController.text.trim());
               if (weight != null) {
                 await petRef.update({"weight": weight});
                 setState(() => petData?['weight'] = weight);
-                Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text("Weight updated successfully")),
-                );
+                if (mounted) {
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("Weight updated successfully"),
+                    ),
+                  );
+                }
+              } else {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("Please enter a valid number"),
+                    ),
+                  );
+                }
               }
             },
             child: const Text("Save"),
@@ -378,16 +317,26 @@ class _PetProfilePageState extends State<PetProfilePage> {
 
   @override
   Widget build(BuildContext context) {
-    final photoUrl = petData?['photoUrl'];
+    // Handle loading and null data cases first
+    if (isLoading) {
+      return Scaffold(
+        appBar: AppBar(title: const Text("Loading...")),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (petData == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text("Error")),
+        body: const Center(child: Text("Pet data could not be loaded.")),
+      );
+    }
+
+    // Data is loaded, proceed with building UI
     final species = (petData?['species'] ?? '').toString().toLowerCase();
-    final fallbackUrl = species.contains('cat')
-        ? 'https://cdn-icons-png.flaticon.com/512/6988/6988878.png'
-        : 'https://cdn-icons-png.flaticon.com/512/616/616408.png';
-    final networkUrl = (photoUrl ?? petData?['image'])?.toString();
-    final ImageProvider avatarImage =
-        networkUrl != null && networkUrl.trim().isNotEmpty
-        ? NetworkImage(networkUrl)
-        : NetworkImage(fallbackUrl);
+    final petIcon = species.contains('cat')
+        ? Icons.pets
+        : Icons.pets; // Using 'pets' for both, you can change one
 
     return Scaffold(
       backgroundColor: Colors.grey.shade50,
@@ -398,160 +347,316 @@ class _PetProfilePageState extends State<PetProfilePage> {
           IconButton(icon: const Icon(Icons.edit), onPressed: _showEditDialog),
         ],
       ),
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : petData == null
-          ? const Center(child: Text("No data found"))
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  // Header card with avatar
-                  Container(
-                    width: double.infinity,
-                    decoration: const BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [Color(0xFFE91E63), Color(0xFFF06292)],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      borderRadius: BorderRadius.all(Radius.circular(16)),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            // Header card with avatar
+            Container(
+              width: double.infinity,
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Color(0xFFE91E63), Color(0xFFF06292)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.all(Radius.circular(16)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 40,
+                      backgroundColor: Colors.white24, // Background for icon
+                      child: Icon(petIcon, size: 40, color: Colors.white),
                     ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Row(
-                        children: [
-                          GestureDetector(
-                            onTap: _showImageOptions,
-                            child: Stack(
-                              children: [
-                                CircleAvatar(
-                                  radius: 40,
-                                  backgroundImage: _imageBytes != null && kIsWeb
-                                      ? MemoryImage(_imageBytes!)
-                                      : (_imageFile != null && !kIsWeb
-                                            ? FileImage(_imageFile!)
-                                            : avatarImage),
-                                ),
-                                Positioned(
-                                  right: 0,
-                                  bottom: 0,
-                                  child: Container(
-                                    decoration: const BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: Colors.white,
-                                    ),
-                                    padding: const EdgeInsets.all(4),
-                                    child: const Icon(
-                                      Icons.camera_alt,
-                                      size: 18,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  petData?['name'] ?? "Unnamed",
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  "${petData?['breed'] ?? 'Unknown Breed'} • ${petData?['species'] ?? 'Unknown Species'}",
-                                  style: const TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 16),
-
-                  // Info card
-                  Card(
-                    elevation: 4,
-                    shadowColor: Colors.black12,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
+                    const SizedBox(width: 12),
+                    Expanded(
                       child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          _buildInfoRow("Age", "${petData?['age']} years"),
-                          _buildInfoRow(
-                            "Gender",
-                            petData?['gender'] ?? "Unknown",
+                          Text(
+                            petData?['name'] ?? "Unnamed",
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 20,
+                              fontWeight: FontWeight.w700,
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          _buildInfoRow(
-                            "Collar ID",
-                            petData?['collarId'] ?? "None",
-                          ),
-                          _buildInfoRow(
-                            "Weight",
-                            petData?['weight'] != null
-                                ? "${petData?['weight']} kg"
-                                : "Not set",
-                          ),
-                          _buildInfoRow(
-                            "Created At",
-                            _formatDate(petData?['createdAt']),
+                          const SizedBox(height: 4),
+                          Text(
+                            "${petData?['breed'] ?? 'Unknown Breed'} • ${petData?['species'] ?? 'Unknown Species'}",
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ],
                       ),
                     ),
-                  ),
-
-                  const SizedBox(height: 16),
-
-                  // Actions
-                  FilledButton.icon(
-                    onPressed: _showAddWeightDialog,
-                    icon: const Icon(Icons.monitor_weight),
-                    label: const Text("Add / Update Weight"),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFFE91E63),
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
+
+            const SizedBox(height: 16),
+
+            // Info card
+            Card(
+              elevation: 4,
+              shadowColor: Colors.black12,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  children: [
+                    _buildInfoRow("Age", "${petData?['age'] ?? '...'} years"),
+                    _buildInfoRow("Gender", petData?['gender'] ?? "Unknown"),
+                    _buildInfoRow(
+                      "Collar ID",
+                      petData?['collarId'] != null &&
+                              petData!['collarId'].isNotEmpty
+                          ? petData!['collarId']
+                          : "None",
+                    ),
+                    _buildInfoRow(
+                      "Weight",
+                      petData?['weight'] != null
+                          ? "${petData?['weight']} kg"
+                          : "Not set",
+                    ),
+                    _buildInfoRow(
+                      "Created At",
+                      _formatDate(petData?['createdAt']),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // --- SHARED WITH CARD ---
+            _buildSharedWithCard(),
+
+            // ------------------------------
+            const SizedBox(height: 16),
+
+            // Actions
+            FilledButton.icon(
+              onPressed: _showAddWeightDialog,
+              icon: const Icon(Icons.monitor_weight),
+              label: const Text("Add / Update Weight"),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFE91E63),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
   Widget _buildInfoRow(String title, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w500)),
-          Text(value, style: const TextStyle(color: Colors.black87)),
+          Text(
+            title,
+            style: const TextStyle(
+              fontWeight: FontWeight.w500,
+              color: Colors.black54,
+            ),
+          ),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.black87,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ],
       ),
     );
   }
 
+  // --- HELPER METHOD FOR SHARED WITH CARD ---
+  Widget _buildSharedWithCard() {
+    // 1. Access the shared_with data
+    final sharedData = petData?['shared_with'];
+
+    // 2. Check if data exists and is the correct type
+    if (sharedData == null || sharedData is! Map || sharedData.isEmpty) {
+      return Card(
+        elevation: 4,
+        shadowColor: Colors.black12,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: const Padding(
+          padding: EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "Shared With",
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              Divider(height: 16),
+              Center(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8.0),
+                  child: Text(
+                    "This pet is not shared with anyone.",
+                    style: TextStyle(color: Colors.black54),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // 3. Cast the data (it's a Map<String, dynamic> where values are also maps)
+    final sharedMap = Map<String, dynamic>.from(sharedData);
+
+    // 4. Create the list of widgets (ListTiles)
+    final List<Widget> sharedUserTiles = [];
+    sharedMap.forEach((shareeId, shareInfo) {
+      if (shareInfo is Map) {
+        final email = shareInfo['email']?.toString() ?? 'Unknown Email';
+        final role = shareInfo['role']?.toString() ?? 'Unknown Role';
+        sharedUserTiles.add(
+          ListTile(
+            leading: Icon(
+              role.toLowerCase() == 'vet'
+                  ? Icons.medical_services_outlined
+                  : Icons.person_outline,
+              color: Colors.pink.shade700,
+            ),
+            title: Text(email),
+            subtitle: Text(
+              role,
+              style: const TextStyle(fontWeight: FontWeight.w500),
+            ),
+            // --- ADDED TRAILING ICON BUTTON ---
+            trailing: IconButton(
+              icon: Icon(
+                Icons.remove_circle_outline,
+                color: Colors.red.shade700,
+              ),
+              onPressed: () {
+                _confirmRemoveSharee(
+                  shareeId,
+                  email,
+                ); // Pass ID and email for dialog
+              },
+            ),
+            // ----------------------------------
+          ),
+        );
+      }
+    });
+
+    // 5. Return the Card
+    return Card(
+      elevation: 4,
+      shadowColor: Colors.black12,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              "Shared With",
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const Divider(height: 16),
+            ...sharedUserTiles, // Spread operator to add all tiles
+          ],
+        ),
+      ),
+    );
+  }
+  // ---------------------------------------------
+
+  // --- NEW METHOD TO CONFIRM AND REMOVE A SHAREE ---
+  void _confirmRemoveSharee(String shareeId, String email) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Remove Access"),
+        content: Text("Are you sure you want to remove access for $email?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("Cancel"),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white, // Text color
+            ),
+            onPressed: () {
+              Navigator.pop(ctx); // Close dialog first
+              _removeSharee(shareeId); // Then perform removal
+            },
+            child: const Text("Remove"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _removeSharee(String shareeId) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    if (petData == null) return;
+
+    final shareeRef = _database.ref(
+      'users/$uid/pets/${widget.petId}/shared_with/$shareeId',
+    );
+
+    try {
+      await shareeRef.remove();
+
+      // Update local state to reflect removal
+      setState(() {
+        (petData?['shared_with'] as Map?)?.remove(shareeId);
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("User access removed successfully.")),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Failed to remove access: $e")));
+      }
+    }
+  }
+  // -----------------------------------------------
+
   String _formatDate(dynamic timestamp) {
     if (timestamp == null) return "Unknown";
-    final date = DateTime.fromMillisecondsSinceEpoch(timestamp);
-    return "${date.year}-${date.month}-${date.day}";
+    try {
+      final date = DateTime.fromMillisecondsSinceEpoch(timestamp);
+      // Format to YYYY-MM-DD
+      return "${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}";
+    } catch (e) {
+      return "Invalid Date";
+    }
   }
 }

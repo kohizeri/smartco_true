@@ -17,9 +17,9 @@ class NotifEditPage extends StatefulWidget {
 
 class _NotifEditPageState extends State<NotifEditPage> {
   FirebaseDatabase get _database => FirebaseDatabase.instanceFor(
-        app: FirebaseAuth.instance.app,
-        databaseURL: _databaseURL,
-      );
+    app: FirebaseAuth.instance.app,
+    databaseURL: _databaseURL,
+  );
   final user = FirebaseAuth.instance.currentUser;
   late DatabaseReference notifRef;
   late DatabaseReference mobDataRef;
@@ -27,14 +27,10 @@ class _NotifEditPageState extends State<NotifEditPage> {
 
   StreamSubscription<DatabaseEvent>? _mobSub;
 
-  // throttle last notification times per type
-  final Map<String, int> _lastNotifAt = {};
-  final int _notifCooldownMs = 5 * 60 * 1000; // 5 minutes
-
   // Configurable values
   bool tempAlert = true;
   bool heartRateAlert = true;
-  bool activityAlert = false;
+  bool geofenceAlert = false;
 
   double minTemp = 36.0;
   double maxTemp = 39.0;
@@ -51,98 +47,15 @@ class _NotifEditPageState extends State<NotifEditPage> {
     mobDataRef = database.ref(
       "users/${user!.uid}/pets/${widget.petId}/mob_data",
     );
-    notificationsRef = database.ref(
-      "users/${user!.uid}/notifications",
-    );
+    notificationsRef = database.ref("users/${user!.uid}/notifications");
 
     _loadSettings();
-    _startMobDataListener();
   }
 
   @override
   void dispose() {
     _mobSub?.cancel();
     super.dispose();
-  }
-
-  void _startMobDataListener() {
-    // Listen for realtime sensor updates and evaluate thresholds
-    _mobSub = mobDataRef.onValue.listen(
-      (event) {
-        final snap = event.snapshot;
-        if (!snap.exists || snap.value == null) return;
-        final map = Map<String, dynamic>.from(snap.value as Map);
-
-        // Attempt to read common field names for temperature & heart rate
-        double? temp;
-        int? hr;
-
-        if (map.containsKey('temp')) {
-          temp = _toDouble(map['temp']);
-        } else if (map.containsKey('temperature')) {
-          temp = _toDouble(map['temperature']);
-        } else if (map.containsKey('t')) {
-          temp = _toDouble(map['t']);
-        }
-
-        if (map.containsKey('heartRate')) {
-          hr = _toInt(map['heartRate']);
-        } else if (map.containsKey('hr')) {
-          hr = _toInt(map['hr']);
-        } else if (map.containsKey('bpm')) {
-          hr = _toInt(map['bpm']);
-        }
-
-        final now = DateTime.now().millisecondsSinceEpoch;
-
-        // Temperature checks
-        if (temp != null && tempAlert) {
-          if (temp < minTemp) {
-            _maybeSendNotification(
-              type: 'temp_low',
-              title: "Low Temperature",
-              message:
-                  "Pet ${widget.petId}: temperature ${temp.toStringAsFixed(1)}°C below ${minTemp.toStringAsFixed(1)}°C",
-              now: now,
-            );
-          } else if (temp > maxTemp) {
-            _maybeSendNotification(
-              type: 'temp_high',
-              title: "High Temperature",
-              message:
-                  "Pet ${widget.petId}: temperature ${temp.toStringAsFixed(1)}°C above ${maxTemp.toStringAsFixed(1)}°C",
-              now: now,
-            );
-          }
-        }
-
-        // Heart rate checks
-        if (hr != null && heartRateAlert) {
-          if (hr < minHeartRate) {
-            _maybeSendNotification(
-              type: 'hr_low',
-              title: "Low Heart Rate",
-              message:
-                  "Pet ${widget.petId}: heart rate $hr bpm below $minHeartRate bpm",
-              now: now,
-            );
-          } else if (hr > maxHeartRate) {
-            _maybeSendNotification(
-              type: 'hr_high',
-              title: "High Heart Rate",
-              message:
-                  "Pet ${widget.petId}: heart rate $hr bpm above $maxHeartRate bpm",
-              now: now,
-            );
-          }
-        }
-
-        // Activity checks could be added here similarly if there's a known key
-      },
-      onError: (err) {
-        // ignore or log
-      },
-    );
   }
 
   double? _toDouble(dynamic v) {
@@ -159,45 +72,6 @@ class _NotifEditPageState extends State<NotifEditPage> {
     if (v is double) return v.toInt();
     if (v is String) return int.tryParse(v);
     return null;
-  }
-
-  Future<void> _maybeSendNotification({
-    required String type,
-    required String title,
-    required String message,
-    required int now,
-  }) async {
-    final last = _lastNotifAt[type] ?? 0;
-    if (now - last < _notifCooldownMs) return;
-    _lastNotifAt[type] = now;
-
-    final notifData = {
-      "title": title,
-      "message": message,
-      "timestamp": now,
-      "type": type,
-      "petId": widget.petId,
-    };
-
-    // Write to realtime DB so NotificationsPage will show it
-    await notificationsRef.push().set(notifData);
-
-    // Optionally show an in-app snackbar so user gets immediate feedback
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const Icon(Icons.notifications_active, color: Colors.white),
-              const SizedBox(width: 12),
-              Expanded(child: Text(title)),
-            ],
-          ),
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 3),
-        ),
-      );
-    }
   }
 
   Future<void> _loadSettings() async {
@@ -220,7 +94,7 @@ class _NotifEditPageState extends State<NotifEditPage> {
       setState(() {
         tempAlert = data["tempAlert"] ?? true;
         heartRateAlert = data["heartRateAlert"] ?? true;
-        activityAlert = data["activityAlert"] ?? false;
+        geofenceAlert = data["geofenceAlert"] ?? false;
 
         // Only update ranges from notification_settings if mob_data doesn't exist
         if (!mobDataSnapshot.exists) {
@@ -238,7 +112,7 @@ class _NotifEditPageState extends State<NotifEditPage> {
     await notifRef.set({
       "tempAlert": tempAlert,
       "heartRateAlert": heartRateAlert,
-      "activityAlert": activityAlert,
+      "geofenceAlert": geofenceAlert,
       "minTemp": minTemp,
       "maxTemp": maxTemp,
       "minHeartRate": minHeartRate,
@@ -538,12 +412,12 @@ class _NotifEditPageState extends State<NotifEditPage> {
                   ),
                   const Divider(height: 1, indent: 72),
                   _ModernSwitchTile(
-                    icon: Icons.directions_run,
+                    icon: Icons.gps_fixed,
                     iconColor: Colors.blue,
-                    title: "Activity Alerts",
-                    subtitle: "Receive activity related alerts",
-                    value: activityAlert,
-                    onChanged: (v) => setState(() => activityAlert = v),
+                    title: "Geofence Alerts",
+                    subtitle: "Receive geofence related alerts",
+                    value: geofenceAlert,
+                    onChanged: (v) => setState(() => geofenceAlert = v),
                   ),
                 ],
               ),
@@ -609,31 +483,6 @@ class _NotifEditPageState extends State<NotifEditPage> {
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    OutlinedButton.icon(
-                      onPressed: () async {
-                        // quick test notification to verify NotificationsPage shows entries
-                        final now = DateTime.now().millisecondsSinceEpoch;
-                        final data = {
-                          'title': 'Test Alert',
-                          'message':
-                              'This is a test notification for pet ${widget.petId}',
-                          'timestamp': now,
-                          'type': 'test',
-                          'petId': widget.petId,
-                        };
-                        await notificationsRef.push().set(data);
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Test notification sent'),
-                            ),
-                          );
-                        }
-                      },
-                      icon: const Icon(Icons.bug_report),
-                      label: const Text('Send Test Notification'),
                     ),
                   ],
                 ),

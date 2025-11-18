@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:intl/intl.dart'; // Import intl package
 import 'package:table_calendar/table_calendar.dart';
 
 const String _databaseURL =
@@ -17,13 +18,20 @@ class RemindersPage extends StatefulWidget {
 
 class _RemindersPageState extends State<RemindersPage> {
   final user = FirebaseAuth.instance.currentUser;
-  late DatabaseReference petRemindersRef;
-  late DatabaseReference userRemindersRef; // For appointments
+  late DatabaseReference allRemindersRef; // Unified ref for all items
 
-  Map<String, Map<String, dynamic>> remindersByTitle = {};
+  // State lists to hold parsed data
+  List<Map<String, dynamic>> _calendarEvents = [];
+  List<Map<String, dynamic>> _remindersList = [];
+  List<Map<String, dynamic>> _appointmentsList = [];
+
   DateTime _focusedDay = DateTime.now();
   DateTime? _selectedDay;
   bool _hideCompleted = false;
+  bool _isCalendarMinimized = false;
+
+  final GlobalKey _fabKey = GlobalKey(); // Key for the FAB
+  String _petName = ''; // To store the pet's name
 
   @override
   void initState() {
@@ -32,261 +40,184 @@ class _RemindersPageState extends State<RemindersPage> {
       app: FirebaseAuth.instance.app,
       databaseURL: _databaseURL,
     );
-    petRemindersRef = database.ref(
-      "users/${user!.uid}/pets/${widget.petId}/reminders",
-    );
-    userRemindersRef = database.ref(
-      "users/${user!.uid}/reminders",
-    );
 
-    // Listen to pet-specific reminders
-    petRemindersRef.onValue.listen((event) {
-      _updateReminders(event.snapshot.value, isPetReminder: true);
-    });
+    // This is now the single source of truth for all reminders and appointments
+    allRemindersRef = database.ref("users/${user!.uid}/reminders");
 
-    // Listen to user-level reminders (appointments from vets)
-    userRemindersRef.onValue.listen((event) {
-      _updateReminders(event.snapshot.value, isPetReminder: false);
-    });
+    _listenToAllEvents(); // Single listener for all data
+    _selectedDay = _focusedDay;
+
+    // Fetch the pet's name
+    _fetchPetName(database);
   }
 
-  void _updateReminders(dynamic data, {required bool isPetReminder}) {
-    if (!mounted) return;
+  // Fetch pet name from Firebase
+  void _fetchPetName(FirebaseDatabase database) async {
+    try {
+      final petNameRef = database.ref(
+        "users/${user!.uid}/pets/${widget.petId}/name",
+      );
+      final snapshot = await petNameRef.get();
+      if (snapshot.exists && mounted) {
+        setState(() {
+          _petName = snapshot.value as String? ?? '';
+        });
+      }
+    } catch (e) {
+      debugPrint("Error fetching pet name: $e");
+    }
+  }
 
-    final Map<String, Map<String, dynamic>> temp = Map.from(remindersByTitle);
+  // Single listener for all reminders and appointments
+  void _listenToAllEvents() {
+    allRemindersRef.onValue.listen((event) {
+      final data = event.snapshot.value as Map<dynamic, dynamic>? ?? {};
+      final allEvents = <Map<String, dynamic>>[];
+      final reminders = <Map<String, dynamic>>[];
+      final appointments = <Map<String, dynamic>>[];
 
-    if (data != null && data is Map) {
       data.forEach((key, value) {
-        if (value is Map) {
-          final reminder = Map<String, dynamic>.from(value);
-          reminder["id"] = key;
-          reminder["isPetReminder"] = isPetReminder;
-          temp[key] = reminder;
+        final item = Map<String, dynamic>.from(value as Map);
+        item['id'] = key; // Add the Firebase key as 'id'
+
+        allEvents.add(item); // Add to list for calendar markers
+
+        // Sort into separate lists based on 'type'
+        if (item['type'] == 'appointment') {
+          appointments.add(item);
+        } else if (item['type'] == 'reminder') {
+          reminders.add(item);
         }
       });
-    } else if (data == null && isPetReminder) {
-      // Remove pet reminders if data is null
-      temp.removeWhere((key, value) => value["isPetReminder"] == true);
-    } else if (data == null && !isPetReminder) {
-      // Remove user reminders if data is null
-      temp.removeWhere((key, value) => value["isPetReminder"] != true);
-    }
 
-    setState(() {
-      remindersByTitle = temp;
+      if (mounted) {
+        setState(() {
+          _calendarEvents = allEvents;
+          _remindersList = reminders;
+          _appointmentsList = appointments;
+        });
+      }
     });
   }
 
-  Future<void> _addOrEditReminderDialog({
-    Map<String, dynamic>? reminder,
-  }) async {
-    // Prevent editing vet appointments
-    if (reminder != null && reminder["type"] == "appointment") {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Vet appointments cannot be edited by owners.'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-      return;
-    }
-    final titleController = TextEditingController(
-      text: reminder != null ? (reminder["title"] ?? "") : "",
-    );
-    final notesController = TextEditingController(
-      text: reminder != null ? (reminder["notes"] ?? "") : "",
-    );
-    bool completed = reminder != null ? (reminder["completed"] == true) : false;
+  List<dynamic> _getEventsForDay(DateTime day) {
+    return _calendarEvents.where((event) {
+      final dateTime = event['dateTime'];
+      if (dateTime is int) {
+        final eventDate = DateTime.fromMillisecondsSinceEpoch(dateTime);
+        return isSameDay(eventDate, day);
+      }
+      return false;
+    }).toList();
+  }
 
-    DateTime? pickedDateTime = reminder != null && reminder["date"] != null
-        ? DateTime.tryParse(reminder["date"] ?? '')?.toLocal()
-        : null;
-
-    await showDialog(
+  void _showAddReminderDialog() {
+    showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(reminder == null ? "Add Reminder" : "Edit Reminder"),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: titleController,
-                decoration: const InputDecoration(
-                  labelText: "Title",
-                  prefixIcon: Icon(Icons.title),
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: notesController,
-                decoration: const InputDecoration(
-                  labelText: "Notes (optional)",
-                  prefixIcon: Icon(Icons.notes),
-                ),
-                maxLines: 2,
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () async {
-                        final now = DateTime.now();
-                        final date = await showDatePicker(
-                          context: context,
-                          initialDate: pickedDateTime ?? now,
-                          firstDate: DateTime(now.year - 1),
-                          lastDate: DateTime(now.year + 5),
-                        );
-                        if (date != null) {
-                          pickedDateTime = DateTime(
-                            date.year,
-                            date.month,
-                            date.day,
-                            pickedDateTime?.hour ?? 9,
-                            pickedDateTime?.minute ?? 0,
-                          );
-                          setState(() {});
-                        }
-                      },
-                      icon: const Icon(Icons.event),
-                      label: Text(
-                        pickedDateTime == null
-                            ? 'Pick Date'
-                            : '${pickedDateTime!.year}-${pickedDateTime!.month.toString().padLeft(2, '0')}-${pickedDateTime!.day.toString().padLeft(2, '0')}',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () async {
-                        final time = await showTimePicker(
-                          context: context,
-                          initialTime: pickedDateTime != null
-                              ? TimeOfDay(
-                                  hour: pickedDateTime!.hour,
-                                  minute: pickedDateTime!.minute,
-                                )
-                              : const TimeOfDay(hour: 9, minute: 0),
-                        );
-                        if (time != null) {
-                          final base = pickedDateTime ?? DateTime.now();
-                          pickedDateTime = DateTime(
-                            base.year,
-                            base.month,
-                            base.day,
-                            time.hour,
-                            time.minute,
-                          );
-                          setState(() {});
-                        }
-                      },
-                      icon: const Icon(Icons.schedule),
-                      label: Text(
-                        pickedDateTime == null
-                            ? 'Pick Time'
-                            : '${pickedDateTime!.hour.toString().padLeft(2, '0')}:${pickedDateTime!.minute.toString().padLeft(2, '0')}',
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              CheckboxListTile(
-                value: completed,
-                onChanged: (v) => setState(() => completed = v ?? false),
-                controlAffinity: ListTileControlAffinity.leading,
-                title: const Text('Mark as completed'),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Cancel"),
-          ),
-          FilledButton(
-            onPressed: () async {
-              if (titleController.text.isEmpty || pickedDateTime == null)
-                return;
-
-              final dateStr =
-                  '${pickedDateTime!.year}-${pickedDateTime!.month.toString().padLeft(2, '0')}-${pickedDateTime!.day.toString().padLeft(2, '0')}';
-              final timeStr =
-                  '${pickedDateTime!.hour.toString().padLeft(2, '0')}:${pickedDateTime!.minute.toString().padLeft(2, '0')}';
-
-              final payload = {
-                "title": titleController.text,
-                "date": dateStr,
-                "time": timeStr,
-                "notes": notesController.text,
-                "completed": completed,
-              };
-
-              final reminderKey = titleController.text.trim();
-              final isPetReminder = reminder?["isPetReminder"] != false;
-              final ref = isPetReminder ? petRemindersRef : userRemindersRef;
-
-              if (reminder == null) {
-                await ref.child(reminderKey).set(payload);
-              } else {
-                final oldKey = reminder["id"];
-                final oldIsPetReminder = reminder["isPetReminder"] != false;
-                final oldRef = oldIsPetReminder ? petRemindersRef : userRemindersRef;
-                
-                if (oldKey != reminderKey || oldIsPetReminder != isPetReminder) {
-                  await oldRef.child(oldKey).remove();
-                }
-                await ref.child(reminderKey).set(payload);
-              }
-
-              if (mounted) Navigator.pop(context);
-            },
-            child: Text(reminder == null ? "Save" : "Update"),
-          ),
-        ],
+      builder: (context) => _AddReminderDialog(
+        allRemindersRef: allRemindersRef,
+        petName: _petName, // Pass pet name
       ),
     );
   }
 
-  void _deleteReminder(String reminderKey, bool isPetReminder) {
-    final ref = isPetReminder ? petRemindersRef : userRemindersRef;
-    ref.child(reminderKey).remove();
+  Future<void> _deleteAppointment(String reminderId) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final database = FirebaseDatabase.instanceFor(
+      app: FirebaseAuth.instance.app,
+      databaseURL: _databaseURL,
+    );
+
+    try {
+      // Delete from owner's reminders
+      await database.ref("users/${user.uid}/reminders/$reminderId").remove();
+
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("Appointment deleted.")));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error deleting appointment: $e")),
+        );
+      }
+    }
   }
 
-  List<Map<String, dynamic>> _getRemindersForDay(DateTime day) {
-    final dateOnly =
-        '${day.year}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
-    final list = remindersByTitle.values
-        .where((r) => r["date"] == dateOnly)
-        .toList();
+  // Show menu on FAB press
+  void _showFabMenu() {
+    final RenderBox? fabRenderBox =
+        _fabKey.currentContext?.findRenderObject() as RenderBox?;
+    if (fabRenderBox == null) return;
 
-    list.sort((a, b) {
-      final ad = a["time"] != null && a["time"] != ''
-          ? TimeOfDay(
-              hour: int.parse(a["time"].split(':')[0]),
-              minute: int.parse(a["time"].split(':')[1]),
-            )
-          : const TimeOfDay(hour: 0, minute: 0);
-      final bd = b["time"] != null && b["time"] != ''
-          ? TimeOfDay(
-              hour: int.parse(b["time"].split(':')[0]),
-              minute: int.parse(b["time"].split(':')[1]),
-            )
-          : const TimeOfDay(hour: 0, minute: 0);
+    final fabPosition = fabRenderBox.localToGlobal(Offset.zero);
 
-      return ad.hour != bd.hour
-          ? ad.hour.compareTo(bd.hour)
-          : ad.minute.compareTo(bd.minute);
+    showMenu(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        fabPosition.dx - 220, // Position menu to the left-above of the FAB
+        fabPosition.dy - 130,
+        fabPosition.dx,
+        fabPosition.dy,
+      ),
+      items: [
+        const PopupMenuItem(
+          value: 'reminder',
+          child: ListTile(
+            leading: Icon(Icons.alarm_add),
+            title: Text('Add Reminder'),
+          ),
+        ),
+        const PopupMenuItem(
+          value: 'appointment',
+          child: ListTile(
+            leading: Icon(Icons.medical_services_outlined),
+            title: Text('Make Vet Appointment'),
+          ),
+        ),
+      ],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ).then((value) {
+      if (value == 'reminder') {
+        _showAddReminderDialog();
+      } else if (value == 'appointment') {
+        _showAddAppointmentDialog();
+      }
     });
+  }
 
-    if (_hideCompleted) {
-      return list.where((r) => r["completed"] != true).toList();
+  // Show dialog to add a vet appointment
+  void _showAddAppointmentDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => _AddAppointmentDialog(
+        petName: _petName, // Pass current pet name
+        clientName:
+            user?.displayName ?? user?.email ?? 'Me', // Pass current user name
+        allRemindersRef: allRemindersRef, // Pass the unified ref
+      ),
+    );
+  }
+
+  void _onDaySelected(DateTime selectedDay, DateTime focusedDay) {
+    if (!isSameDay(_selectedDay, selectedDay)) {
+      setState(() {
+        _selectedDay = selectedDay;
+        _focusedDay = focusedDay;
+      });
     }
-    return list;
+  }
+
+  void _toggleReminderComplete(String id, bool currentState) {
+    allRemindersRef.child(id).update({'completed': !currentState});
+  }
+
+  void _deleteReminder(String id) {
+    allRemindersRef.child(id).remove();
   }
 
   @override
@@ -294,246 +225,806 @@ class _RemindersPageState extends State<RemindersPage> {
     return Scaffold(
       body: Column(
         children: [
-          // Header
-          Container(
-            width: double.infinity,
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                colors: [Color(0xFFE91E63), Color(0xFFF06292)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.only(
-                bottomLeft: Radius.circular(16),
-                bottomRight: Radius.circular(16),
-              ),
-            ),
-            child: SafeArea(
-              bottom: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.15),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.notifications_active,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Text(
-                        'Reminders',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                    FilterChip(
-                      label: const Text('Hide completed'),
-                      selected: _hideCompleted,
-                      onSelected: (v) => setState(() => _hideCompleted = v),
-                      selectedColor: Colors.white,
-                      backgroundColor: Colors.white.withOpacity(0.2),
-                      labelStyle: TextStyle(
-                        color: _hideCompleted
-                            ? const Color(0xFFE91E63)
-                            : Colors.white,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      shape: StadiumBorder(
-                        side: BorderSide(color: Colors.white.withOpacity(0.6)),
-                      ),
-                    ),
-                  ],
+          if (!_isCalendarMinimized)
+            TableCalendar(
+              firstDay: DateTime.utc(2020, 1, 1),
+              lastDay: DateTime.utc(2030, 12, 31),
+              focusedDay: _focusedDay,
+              selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+              onDaySelected: _onDaySelected,
+              eventLoader: _getEventsForDay,
+              calendarStyle: const CalendarStyle(
+                todayDecoration: BoxDecoration(
+                  color: Color(0x80E91E63),
+                  shape: BoxShape.circle,
+                ),
+                selectedDecoration: BoxDecoration(
+                  color: Color(0xFFE91E63),
+                  shape: BoxShape.circle,
                 ),
               ),
+              headerStyle: const HeaderStyle(
+                formatButtonVisible: false,
+                titleCentered: true,
+              ),
+            ),
+          const SizedBox(height: 8.0),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                // Hide Completed switch
+                Text(
+                  'Hide Completed',
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
+                Switch(
+                  value: _hideCompleted,
+                  onChanged: (value) {
+                    setState(() {
+                      _hideCompleted = value;
+                    });
+                  },
+                  activeColor: const Color(0xFFE91E63),
+                ),
+                const SizedBox(width: 16), // spacing
+                // Minimize Calendar switch
+                Text('Minimize', style: TextStyle(color: Colors.grey.shade700)),
+                Switch(
+                  value: _isCalendarMinimized,
+                  onChanged: (value) {
+                    setState(() {
+                      _isCalendarMinimized = value;
+                    });
+                  },
+                  activeColor: const Color(0xFFE91E63),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 8),
-          TableCalendar(
-            firstDay: DateTime.utc(2020, 1, 1),
-            lastDay: DateTime.utc(2030, 12, 31),
-            focusedDay: _focusedDay,
-            selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-            eventLoader: _getRemindersForDay,
-            calendarStyle: CalendarStyle(
-              todayDecoration: BoxDecoration(
-                color: const Color(0xFFE91E63).withOpacity(0.15),
-                shape: BoxShape.circle,
-              ),
-              selectedDecoration: const BoxDecoration(
-                color: Color(0xFFE91E63),
-                shape: BoxShape.circle,
-              ),
-              markerDecoration: const BoxDecoration(
-                color: Colors.blue,
-                shape: BoxShape.circle,
-              ),
-              outsideDaysVisible: false,
+          const Divider(),
+          Expanded(
+            child: ListView(
+              children: [_buildReminderList(), _buildAppointmentList()],
             ),
-            onDaySelected: (selectedDay, focusedDay) {
-              setState(() {
-                _selectedDay = selectedDay;
-                _focusedDay = focusedDay;
-              });
-            },
           ),
-          const SizedBox(height: 10),
-          Expanded(child: _buildRemindersList()),
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _addOrEditReminderDialog(),
+        key: _fabKey, // Assign key
+        onPressed: _showFabMenu, // Use new menu function
+        backgroundColor: const Color(0xFFE91E63),
+        foregroundColor: Colors.white,
         child: const Icon(Icons.add),
       ),
     );
   }
 
-  Widget _buildRemindersList() {
-    final list = _getRemindersForDay(_selectedDay ?? _focusedDay);
-    if (list.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: const [
-            Icon(Icons.event_busy, size: 48, color: Colors.grey),
-            SizedBox(height: 8),
-            Text('No reminders for this day'),
-          ],
+  Widget _buildReminderList() {
+    // Filter reminders for the current pet
+    final petReminders = _remindersList
+        .where((r) => r['petName'] == _petName)
+        .toList();
+
+    // Sort reminders by date
+    petReminders.sort((a, b) {
+      final aDate = a['dateTime'] as int? ?? 0;
+      final bDate = b['dateTime'] as int? ?? 0;
+      return aDate.compareTo(bDate);
+    });
+
+    var filteredReminders = petReminders;
+    if (_hideCompleted) {
+      filteredReminders = petReminders
+          .where((r) => r['completed'] == false)
+          .toList();
+    }
+
+    if (filteredReminders.isEmpty && petReminders.isNotEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(16.0),
+        child: Center(
+          child: Text(
+            'All reminders are completed!',
+            style: TextStyle(color: Colors.grey),
+          ),
         ),
       );
     }
 
-    return ListView.builder(
-      itemCount: list.length,
-      itemBuilder: (context, index) {
-        final r = list[index];
-        final title = (r["title"] ?? '').toString();
-        final dateStr = (r["date"] ?? '').toString();
-        final timeStr = (r["time"] ?? '').toString();
-        final completed = r["completed"] == true;
-        final notes = (r["notes"] ?? '').toString();
-
-        return Card(
-          margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+    if (filteredReminders.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(16.0),
+        child: Center(
+          child: Text(
+            'No reminders for this pet yet.',
+            style: TextStyle(color: Colors.grey),
           ),
-          child: ListTile(
-            leading: CircleAvatar(
-              backgroundColor: r["type"] == "appointment"
-                  ? (completed
-                      ? Colors.blue.shade100
-                      : Colors.blue.shade200)
-                  : (completed
-                      ? Colors.green.shade100
-                      : const Color(0xFFE91E63).withOpacity(0.15)),
-              child: Icon(
-                r["type"] == "appointment"
-                    ? (completed ? Icons.medical_services : Icons.local_hospital)
-                    : (completed ? Icons.check_circle : Icons.alarm),
-                color: r["type"] == "appointment"
-                    ? (completed ? Colors.blue.shade700 : Colors.blue.shade800)
-                    : (completed ? Colors.green : const Color(0xFFE91E63)),
-              ),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+          child: Text(
+            'Pet Reminders',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+              color: Colors.black87,
+              fontWeight: FontWeight.bold,
             ),
-            title: Text(
-              title,
-              style: TextStyle(
-                fontWeight: FontWeight.w600,
-                decoration: completed ? TextDecoration.lineThrough : null,
-                color: completed ? Colors.grey : null,
-              ),
-            ),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('$dateStr ${timeStr.isNotEmpty ? timeStr : ''}'),
-                if (notes.isNotEmpty)
-                  Text(notes, maxLines: 2, overflow: TextOverflow.ellipsis),
-              ],
-            ),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  tooltip: completed ? 'Mark as pending' : 'Mark as done',
-                  icon: Icon(
-                    completed ? Icons.undo : Icons.check,
-                    color: completed ? Colors.orange : Colors.green,
-                  ),
-                  onPressed: () async {
-                    final isPetReminder = r["isPetReminder"] != false;
-                    final ref = isPetReminder ? petRemindersRef : userRemindersRef;
-                    await ref.child(r["id"]).update({
-                      "completed": !completed,
-                    });
-                    
-                    // If this is a vet appointment, sync completion status to vet's appointment
-                    if (r["type"] == "appointment" && r["vetUid"] != null && r["appointmentId"] != null) {
-                      final database = FirebaseDatabase.instanceFor(
-                        app: FirebaseAuth.instance.app,
-                        databaseURL: _databaseURL,
-                      );
-                      final vetAppointmentRef = database.ref(
-                        "users/${r["vetUid"]}/appointments/${r["appointmentId"]}",
-                      );
-                      await vetAppointmentRef.update({
-                        "completed": !completed,
-                        if (!completed) "completedAt": DateTime.now().millisecondsSinceEpoch,
-                      });
-                    }
-                  },
+          ),
+        ),
+        ListView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: filteredReminders.length,
+          itemBuilder: (context, index) {
+            final r = filteredReminders[index];
+            final rId = r['id'] as String;
+            final isCompleted = r['completed'] as bool? ?? false;
+            final rDateTime = DateTime.fromMillisecondsSinceEpoch(
+              r['dateTime'] as int? ?? 0,
+            );
+
+            final isOverdue =
+                rDateTime.isBefore(DateTime.now()) && !isCompleted;
+            return Card(
+              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              elevation: 2,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: BorderSide(
+                  color: isOverdue ? Colors.red.shade300 : Colors.transparent,
+                  width: 1,
                 ),
-                // Only allow editing/deleting if it's not a vet appointment
-                if (r["type"] != "appointment") ...[
-                  IconButton(
-                    icon: const Icon(Icons.edit, color: Colors.orange),
-                    onPressed: () => _addOrEditReminderDialog(reminder: r),
+              ),
+              child: ListTile(
+                leading: Checkbox(
+                  value: isCompleted,
+                  onChanged: (val) => _toggleReminderComplete(rId, isCompleted),
+                  activeColor: const Color(0xFFE91E63),
+                ),
+                title: Text(
+                  r['title'] as String? ?? 'No Title',
+                  style: TextStyle(
+                    decoration: isCompleted ? TextDecoration.lineThrough : null,
+                    fontWeight: FontWeight.w600,
+                    color: isOverdue ? Colors.red.shade700 : Colors.black87,
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.red),
-                    onPressed: () async {
-                      final ok = await showDialog<bool>(
-                        context: context,
-                        builder: (ctx) => AlertDialog(
-                          title: const Text('Delete Reminder'),
-                          content: const Text(
-                            'Are you sure you want to delete this reminder?',
+                ),
+                subtitle: Text(
+                  DateFormat.yMMMd().add_jm().format(rDateTime),
+                  style: TextStyle(
+                    color: isOverdue
+                        ? Colors.red.shade700
+                        : Colors.grey.shade600,
+                  ),
+                ),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete_outline, color: Colors.grey),
+                  onPressed: () => _deleteReminder(rId),
+                ),
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAppointmentList() {
+    if (_appointmentsList.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(16.0),
+        child: Center(
+          child: Text(
+            'No appointments scheduled.',
+            style: TextStyle(color: Colors.grey),
+          ),
+        ),
+      );
+    }
+
+    // Sort by date, most recent first
+    _appointmentsList.sort((a, b) {
+      final aDate = a['dateTime'] as int? ?? 0;
+      final bDate = b['dateTime'] as int? ?? 0;
+      return bDate.compareTo(aDate);
+    });
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+          child: Text(
+            'My Appointments',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+              color: Colors.black87,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        ListView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: _appointmentsList.length,
+          itemBuilder: (context, index) {
+            final r = _appointmentsList[index];
+            final rStatus = r['status'] as String? ?? 'pending';
+            final rDateTime = DateTime.fromMillisecondsSinceEpoch(
+              r['dateTime'] as int? ?? 0,
+            );
+            final rNotes = r['notes'] as String? ?? '';
+
+            IconData statusIcon;
+            Color statusColor;
+            switch (rStatus) {
+              case 'confirmed':
+                statusIcon = Icons.check_circle;
+                statusColor = Colors.green;
+                break;
+              case 'rejected':
+                statusIcon = Icons.cancel;
+                statusColor = Colors.red;
+                break;
+              default: // pending
+                statusIcon = Icons.hourglass_empty;
+                statusColor = Colors.orange;
+            }
+
+            return Card(
+              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              elevation: 2,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(statusIcon, color: statusColor, size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          rStatus.toUpperCase(),
+                          style: TextStyle(
+                            color: statusColor,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.5,
                           ),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(ctx, false),
-                              child: const Text('Cancel'),
-                            ),
-                            FilledButton(
-                              onPressed: () => Navigator.pop(ctx, true),
-                              child: const Text('Delete'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Vet: ${r['vetEmail'] ?? 'N/A'}',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    Text(
+                      'Pet: ${r['petName'] ?? 'N/A'}',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      DateFormat.yMMMd().add_jm().format(rDateTime),
+                      style: TextStyle(color: Colors.grey.shade700),
+                    ),
+                    if (rNotes.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        rNotes,
+                        style: TextStyle(color: Colors.grey.shade600),
+                      ),
+                    ],
+                    if (rStatus == 'confirmed' || rStatus == 'rejected') ...[
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.delete, color: Colors.red),
+                            onPressed: () => _deleteAppointment(r['id']),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (rStatus == 'pending') ...[
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          if (r['requestedBy'] == 'vet') ...[
+                            TextButton.icon(
+                              onPressed: () async {
+                                final database = FirebaseDatabase.instanceFor(
+                                  app: FirebaseAuth.instance.app,
+                                  databaseURL: _databaseURL,
+                                );
+
+                                try {
+                                  final ownerUid =
+                                      r['ownerUid'] ??
+                                      FirebaseAuth.instance.currentUser!.uid;
+                                  final vetUid = r['vetUid'];
+
+                                  // Update status in owner's node
+                                  final ownerRef = database.ref(
+                                    'users/$ownerUid/reminders/${r['id']}',
+                                  );
+                                  await ownerRef.update({
+                                    'status': 'confirmed',
+                                  });
+
+                                  // Update status in vet's node
+                                  if (vetUid != null) {
+                                    final vetRef = database.ref(
+                                      'users/$vetUid/appointments/${r['id']}',
+                                    );
+                                    await vetRef.update({
+                                      'status': 'confirmed',
+                                    });
+                                  }
+
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Appointment accepted.'),
+                                      backgroundColor: Colors.green,
+                                    ),
+                                  );
+                                } catch (e) {
+                                  debugPrint('Error accepting appointment: $e');
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text('Error: $e'),
+                                      backgroundColor: Colors.red,
+                                    ),
+                                  );
+                                }
+                              },
+                              icon: const Icon(Icons.check, size: 18),
+                              label: const Text('Accept Request'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.green,
+                              ),
                             ),
                           ],
-                        ),
-                      );
-                      if (ok == true) {
-                        final isPetReminder = r["isPetReminder"] != false;
-                        _deleteReminder(r["id"], isPetReminder);
-                      }
-                    },
-                  ),
-                ],
-              ],
-            ),
-          ),
-        );
-      },
+                          TextButton.icon(
+                            onPressed: () async {
+                              final database = FirebaseDatabase.instanceFor(
+                                app: FirebaseAuth.instance.app,
+                                databaseURL: _databaseURL,
+                              );
+
+                              try {
+                                final ownerUid =
+                                    r['ownerUid'] ??
+                                    FirebaseAuth.instance.currentUser!.uid;
+                                final vetUid = r['vetUid'];
+
+                                // Update status in owner's node
+                                final ownerRef = database.ref(
+                                  'users/$ownerUid/reminders/${r['id']}',
+                                );
+                                await ownerRef.update({'status': 'rejected'});
+
+                                // Update status in vet's node
+                                if (vetUid != null) {
+                                  final vetRef = database.ref(
+                                    'users/$vetUid/appointments/${r['id']}',
+                                  );
+                                  await vetRef.update({'status': 'rejected'});
+                                }
+
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Appointment rejected.'),
+                                    backgroundColor: Colors.red,
+                                  ),
+                                );
+                              } catch (e) {
+                                debugPrint('Error rejecting appointment: $e');
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Error: $e'),
+                                    backgroundColor: Colors.red,
+                                  ),
+                                );
+                              }
+                            },
+                            icon: const Icon(Icons.close, size: 18),
+                            label: Text(
+                              r['requestedBy'] == 'vet'
+                                  ? 'Reject Request'
+                                  : 'Cancel Request',
+                            ),
+                            style: TextButton.styleFrom(
+                              foregroundColor: Colors.red,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ],
     );
   }
 }
+
+class _AddReminderDialog extends StatefulWidget {
+  final DatabaseReference allRemindersRef;
+  final String petName;
+
+  const _AddReminderDialog({
+    required this.allRemindersRef,
+    required this.petName,
+  });
+
+  @override
+  _AddReminderDialogState createState() => _AddReminderDialogState();
+}
+
+class _AddReminderDialogState extends State<_AddReminderDialog> {
+  final _formKey = GlobalKey<FormState>();
+  String _title = '';
+  DateTime _selectedDate = DateTime.now();
+  TimeOfDay _selectedTime = TimeOfDay.now();
+
+  Future<void> _pickDate(BuildContext context) async {
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (pickedDate != null && pickedDate != _selectedDate) {
+      setState(() {
+        _selectedDate = pickedDate;
+      });
+    }
+  }
+
+  Future<void> _pickTime(BuildContext context) async {
+    final pickedTime = await showTimePicker(
+      context: context,
+      initialTime: _selectedTime,
+    );
+    if (pickedTime != null && pickedTime != _selectedTime) {
+      setState(() {
+        _selectedTime = pickedTime;
+      });
+    }
+  }
+
+  void _submit() {
+    if (_formKey.currentState!.validate()) {
+      _formKey.currentState!.save();
+      final combinedDateTime = DateTime(
+        _selectedDate.year,
+        _selectedDate.month,
+        _selectedDate.day,
+        _selectedTime.hour,
+        _selectedTime.minute,
+      );
+
+      // Write to the unified /reminders/ path
+      widget.allRemindersRef.push().set({
+        'type': 'reminder',
+        'title': _title,
+        'petName': widget.petName, // Add petName to filter
+        'dateTime': combinedDateTime.millisecondsSinceEpoch,
+        'date': DateFormat('yyyy-MM-dd').format(combinedDateTime),
+        'time': DateFormat('HH:mm').format(combinedDateTime),
+        'completed': false,
+        'notes': '', // Add empty notes
+        'createdAt': ServerValue.timestamp,
+      });
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Add Reminder'),
+      content: Form(
+        key: _formKey,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                decoration: const InputDecoration(labelText: 'Title'),
+                validator: (value) =>
+                    value!.isEmpty ? 'Please enter a title' : null,
+                onSaved: (value) => _title = value!,
+              ),
+              const SizedBox(height: 20),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('Date: ${DateFormat.yMMMd().format(_selectedDate)}'),
+                  TextButton(
+                    onPressed: () => _pickDate(context),
+                    child: const Text('Change'),
+                  ),
+                ],
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('Time: ${_selectedTime.format(context)}'),
+                  TextButton(
+                    onPressed: () => _pickTime(context),
+                    child: const Text('Change'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(onPressed: _submit, child: const Text('Add')),
+      ],
+    );
+  }
+}
+
+// Dialog for adding a new appointment (user's perspective)
+class _AddAppointmentDialog extends StatefulWidget {
+  final String petName;
+  final String clientName;
+  final DatabaseReference allRemindersRef; // Use the unified ref
+
+  const _AddAppointmentDialog({
+    required this.petName,
+    required this.clientName,
+    required this.allRemindersRef,
+  });
+
+  @override
+  State<_AddAppointmentDialog> createState() => _AddAppointmentDialogState();
+}
+
+class _AddAppointmentDialogState extends State<_AddAppointmentDialog> {
+  late TextEditingController _vetEmailController; // Changed to vetEmail
+  late TextEditingController _petNameController;
+  late TextEditingController _notesController;
+  DateTime _selectedDate = DateTime.now();
+  TimeOfDay _selectedTime = TimeOfDay.now();
+
+  @override
+  void initState() {
+    super.initState();
+    _vetEmailController = TextEditingController();
+    _petNameController = TextEditingController(text: widget.petName);
+    _notesController = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _vetEmailController.dispose();
+    _petNameController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickDate() async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (date != null) {
+      setState(() => _selectedDate = date);
+    }
+  }
+
+  Future<void> _pickTime() async {
+    final time = await showTimePicker(
+      context: context,
+      initialTime: _selectedTime,
+    );
+    if (time != null) {
+      setState(() => _selectedTime = time);
+    }
+  }
+
+  void _submit() async {
+    final vetEmail = _vetEmailController.text.trim();
+    final petName = _petNameController.text.trim();
+
+    if (vetEmail.isEmpty || petName.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please fill in Vet Email and Pet Name.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    final combinedDateTime = DateTime(
+      _selectedDate.year,
+      _selectedDate.month,
+      _selectedDate.day,
+      _selectedTime.hour,
+      _selectedTime.minute,
+    );
+
+    try {
+      final database = FirebaseDatabase.instanceFor(
+        app: FirebaseAuth.instance.app,
+        databaseURL: _databaseURL,
+      );
+
+      // Find vet UID from email
+      final userSnapshot = await database
+          .ref('users')
+          .orderByChild('email')
+          .equalTo(vetEmail)
+          .get();
+
+      if (!userSnapshot.exists) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Vet not found in database.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+
+      final vetData = (userSnapshot.value as Map).entries.first;
+      final vetUid = vetData.key;
+
+      // Appointment data for owner
+      final appointmentDataOwner = {
+        'type': 'appointment',
+        'title': 'Vet Appointment: $petName',
+        'petName': petName,
+        'vetEmail': vetEmail,
+        'vetUid': vetUid,
+        'ownerUid': FirebaseAuth.instance.currentUser!.uid,
+        'ownerEmail': FirebaseAuth.instance.currentUser!.email,
+        'status': 'pending',
+        'requestedBy': 'user',
+        'notes': _notesController.text.trim(),
+        'dateTime': combinedDateTime.millisecondsSinceEpoch,
+        'date': DateFormat('yyyy-MM-dd').format(combinedDateTime),
+        'time': DateFormat('HH:mm').format(combinedDateTime),
+        'completed': false,
+        'createdAt': ServerValue.timestamp,
+      };
+
+      // Generate a single appointment key for both owner and vet
+      final ownerRef = database.ref(
+        'users/${FirebaseAuth.instance.currentUser!.uid}/reminders',
+      );
+      final newAppointmentRef = ownerRef.push(); // generates a unique key
+      final appointmentId = newAppointmentRef.key; // get the ID
+
+      // Add the ID to appointment data
+      appointmentDataOwner['id'] = appointmentId;
+      await newAppointmentRef.set(appointmentDataOwner);
+
+      // Appointment data for vet (copy from owner)
+      final appointmentDataVet = Map<String, dynamic>.from(
+        appointmentDataOwner,
+      );
+      appointmentDataVet['requestedBy'] = 'user';
+
+      // Use the same appointment ID for vet
+      final vetRef = database.ref('users/$vetUid/appointments/$appointmentId');
+      await vetRef.set(appointmentDataVet);
+
+      Navigator.of(context).pop();
+    } catch (e) {
+      debugPrint('Error creating appointment: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error creating appointment: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Make Vet Appointment'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _vetEmailController,
+              decoration: const InputDecoration(
+                labelText: 'Vet Email', // Changed label
+                icon: Icon(Icons.medical_services_outlined),
+                hintText: 'e.g., dr.smith@vet.com',
+              ),
+              keyboardType: TextInputType.emailAddress,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _petNameController,
+              decoration: const InputDecoration(
+                labelText: 'Pet Name',
+                icon: Icon(Icons.pets),
+              ),
+              textCapitalization: TextCapitalization.words,
+            ),
+            const SizedBox(height: 24),
+            Row(
+              children: [
+                const Icon(Icons.calendar_today, color: Colors.grey),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text(
+                    'Date: ${DateFormat.yMMMd().format(_selectedDate)}',
+                  ),
+                ),
+                TextButton(onPressed: _pickDate, child: const Text('Change')),
+              ],
+            ),
+            Row(
+              children: [
+                const Icon(Icons.access_time, color: Colors.grey),
+                const SizedBox(width: 16),
+                Expanded(child: Text('Time: ${_selectedTime.format(context)}')),
+                TextButton(onPressed: _pickTime, child: const Text('Change')),
+              ],
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _notesController,
+              decoration: const InputDecoration(
+                labelText: 'Reason / Notes (optional)',
+                icon: Icon(Icons.note_add_outlined),
+              ),
+              textCapitalization: TextCapitalization.sentences,
+              maxLines: 2,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: _submit,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFFE91E63),
+            foregroundColor: Colors.white,
+          ),
+          child: const Text('Request'),
+        ),
+      ],
+    );
+  }
+}
+
+// Removed the old _Appointment and _Reminder data models as they are no longer used.

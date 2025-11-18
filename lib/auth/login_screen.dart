@@ -23,7 +23,8 @@ class _LoginScreenState extends State<LoginScreen> {
   bool isLoading = false;
   bool _obscurePassword = true;
 
-  Future<void> _registerDeviceToken(String uid) async {
+  /// Register the current device with FCM token and mark it online
+  Future<void> _registerDevice(String uid) async {
     try {
       final fcmToken = await FirebaseMessaging.instance.getToken();
       if (fcmToken != null) {
@@ -31,11 +32,25 @@ class _LoginScreenState extends State<LoginScreen> {
           app: FirebaseAuth.instance.app,
           databaseURL: _databaseURL,
         );
-        await database.ref('users/$uid/deviceToken').set(fcmToken);
-        print("Device token stored: $fcmToken");
+
+        final deviceRef = database.ref('users/$uid/devices/$fcmToken');
+
+        // Mark this device as online
+        await deviceRef.update({
+          "isOnline": true,
+          "lastSeen": ServerValue.timestamp,
+        });
+
+        // Auto-set offline if app disconnects
+        deviceRef.onDisconnect().update({
+          "isOnline": false,
+          "lastSeen": ServerValue.timestamp,
+        });
+
+        print("✔ Device registered & online: $fcmToken");
       }
     } catch (e) {
-      print("Error registering device token: $e");
+      print("❌ Error registering device: $e");
     }
   }
 
@@ -53,12 +68,11 @@ class _LoginScreenState extends State<LoginScreen> {
             password: _passwordController.text.trim(),
           );
 
-      // Get logged-in user's UID
       final uid = userCredential.user?.uid;
 
       if (uid != null) {
-        // Register device for FCM
-        await _registerDeviceToken(uid);
+        // Register device for FCM with multi-device support
+        await _registerDevice(uid);
 
         // Fetch role from Realtime Database
         final database = FirebaseDatabase.instanceFor(
@@ -72,7 +86,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
           if (mounted) {
             if (role == "vet") {
-              // Navigate to Vet Dashboard
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(builder: (_) => const VetScreen()),

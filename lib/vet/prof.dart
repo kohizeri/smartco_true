@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 
-import 'vet_pet.dart';
+import 'vet_pet.dart'; // Assuming this file exists and contains VetPetProfilePage
 
 const String _databaseURL =
     'https://smartcollar-c69c1-default-rtdb.asia-southeast1.firebasedatabase.app';
@@ -43,7 +43,9 @@ class _VetProfilePageState extends State<VetProfilePage> {
     app: FirebaseAuth.instance.app,
     databaseURL: _databaseURL,
   );
-  final uid = FirebaseAuth.instance.currentUser!.uid;
+
+  User? get _currentUser => FirebaseAuth.instance.currentUser;
+  String? get _uid => _currentUser?.uid;
 
   late DatabaseReference sharedPetsRef;
 
@@ -53,16 +55,13 @@ class _VetProfilePageState extends State<VetProfilePage> {
     if (normalized.contains('bird')) return Icons.flutter_dash;
     if (normalized.contains('fish')) return Icons.water;
     if (normalized.contains('horse')) return Icons.airline_stops;
-    return Icons.pets;
+    return Icons.pets; // Default
   }
 
+  // --- COLOR FIX ---
+  // Reverted to shades of pink as requested
   Color _speciesColor(String species) {
-    final normalized = species.toLowerCase();
-    if (normalized.contains('cat')) return const Color(0xFF9C27B0);
-    if (normalized.contains('dog')) return const Color(0xFF03A9F4);
-    if (normalized.contains('bird')) return const Color(0xFFFFC107);
-    if (normalized.contains('fish')) return const Color(0xFF4CAF50);
-    return const Color(0xFF607D8B);
+    return Colors.pink[300] ?? Colors.pink;
   }
 
   LinearGradient _cardGradient(Color base) {
@@ -110,7 +109,15 @@ class _VetProfilePageState extends State<VetProfilePage> {
 
   @override
   Widget build(BuildContext context) {
+    // Add a null-check for the user UID
+    if (_uid == null) {
+      return const Scaffold(
+        body: Center(child: Text("Error: You are not logged in.")),
+      );
+    }
+
     return Scaffold(
+      backgroundColor: Colors.grey[50],
       body: StreamBuilder(
         stream: sharedPetsRef.onValue,
         builder: (context, snapshot) {
@@ -140,8 +147,8 @@ class _VetProfilePageState extends State<VetProfilePage> {
                   final sharedWith = Map<dynamic, dynamic>.from(
                     petData["shared_with"] as Map,
                   );
-                  if (sharedWith.containsKey(uid)) {
-                    final sharedEntry = sharedWith[uid];
+                  if (sharedWith.containsKey(_uid!)) {
+                    final sharedEntry = sharedWith[_uid!];
                     final role =
                         sharedEntry is Map && sharedEntry['role'] != null
                         ? sharedEntry['role'].toString()
@@ -181,8 +188,10 @@ class _VetProfilePageState extends State<VetProfilePage> {
                 child: Container(
                   width: double.infinity,
                   decoration: const BoxDecoration(
+                    // --- COLOR FIX ---
+                    // Reverted to shades of pink
                     gradient: LinearGradient(
-                      colors: [Color(0xFFE91E63), Color(0xFFF48FB1)],
+                      colors: [Colors.pinkAccent, Color(0xFFF06292)],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
@@ -202,7 +211,9 @@ class _VetProfilePageState extends State<VetProfilePage> {
                               shape: BoxShape.circle,
                             ),
                             child: const Icon(
-                              Icons.medical_services_rounded,
+                              // --- COLOR FIX ---
+                              // Changed icon to be pet-themed
+                              Icons.pets_rounded,
                               color: Colors.white,
                               size: 26,
                             ),
@@ -243,9 +254,10 @@ class _VetProfilePageState extends State<VetProfilePage> {
                 child: LayoutBuilder(
                   builder: (context, constraints) {
                     final crossAxisCount = 2;
+                    // Adjusted aspect ratio slightly
                     final childAspectRatio = constraints.maxWidth >= 480
-                        ? 0.78
-                        : 0.72;
+                        ? 0.8
+                        : 0.75;
 
                     return GridView.builder(
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
@@ -334,73 +346,60 @@ class _VetProfilePageState extends State<VetProfilePage> {
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                   const SizedBox(height: 8),
-                                  Wrap(
-                                    spacing: 8,
-                                    runSpacing: 8,
-                                    children: [
-                                      _ChipLabel(
-                                        label: speciesLabel,
-                                        color: speciesColor,
-                                      ),
-                                      _ChipLabel(
-                                        label: breedLabel,
-                                        color: speciesColor.withOpacity(0.85),
-                                      ),
-                                      _ChipLabel(
-                                        label: pet.role.toUpperCase(),
-                                        color: speciesColor.darken(0.12),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Text(
-                                    'Age: ${pet.ageLabel}',
-                                    style: const TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    'Owner UID: ${pet.ownerUid}',
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.black87,
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  const SizedBox(height: 16),
-                                  Container(
-                                    width: double.infinity,
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 21,
-                                      vertical: 10,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white.withOpacity(0.35),
-                                      borderRadius: BorderRadius.circular(16),
-                                    ),
-                                    child: FittedBox(
-                                      fit: BoxFit.scaleDown,
-                                      child: Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.center,
+                                  //
+                                  // --- OVERFLOW FIX ---
+                                  //
+                                  // Wrapped the variable-height content in an
+                                  // Expanded + SingleChildScrollView to
+                                  // prevent all overflow errors.
+                                  //
+                                  Expanded(
+                                    child: SingleChildScrollView(
+                                      physics: const BouncingScrollPhysics(),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
                                         children: [
+                                          Wrap(
+                                            spacing: 8,
+                                            runSpacing: 8,
+                                            children: [
+                                              _ChipLabel(
+                                                label: speciesLabel,
+                                                color: speciesColor,
+                                              ),
+                                              _ChipLabel(
+                                                label: breedLabel,
+                                                color: speciesColor.withOpacity(
+                                                  0.85,
+                                                ),
+                                              ),
+                                              _ChipLabel(
+                                                label: pet.role.toUpperCase(),
+                                                color: speciesColor.darken(
+                                                  0.12,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 12),
                                           Text(
-                                            'Open profile',
-                                            style: TextStyle(
+                                            'Age: ${pet.ageLabel}',
+                                            style: const TextStyle(
                                               fontSize: 13,
                                               fontWeight: FontWeight.w600,
-                                              color: speciesColor.darken(0.2),
                                             ),
                                           ),
-                                          const SizedBox(width: 6),
-                                          Icon(
-                                            Icons.arrow_forward_rounded,
-                                            size: 20,
-                                            color: speciesColor.darken(0.2),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            'Owner UID: ${pet.ownerUid}',
+                                            style: const TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.black87,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
                                           ),
                                         ],
                                       ),
@@ -447,6 +446,8 @@ class _ChipLabel extends StatelessWidget {
           color: color.darken(0.1),
           letterSpacing: 0.4,
         ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
       ),
     );
   }

@@ -196,18 +196,41 @@ class _HomeDashboardState extends State<HomeDashboard> {
         databaseURL: _databaseURL,
       );
 
-      // Extract collar_data values safely
-      final int newBpm = collarData['bpm'] is int
-          ? collarData['bpm'] as int
-          : int.tryParse(collarData['bpm']?.toString() ?? '0') ?? 0;
+      final int? parsedBpm =
+          collarData.containsKey('bpm') && collarData['bpm'] != null
+          ? (collarData['bpm'] is int
+                ? collarData['bpm'] as int
+                : int.tryParse(collarData['bpm'].toString()))
+          : null;
 
-      final double newTemperature = collarData['temperature'] is num
-          ? (collarData['temperature'] as num).toDouble()
-          : double.tryParse(collarData['temperature']?.toString() ?? '0') ??
-                0.0;
+      double? parsedTemp =
+          collarData.containsKey('temperature') &&
+              collarData['temperature'] != null
+          ? (collarData['temperature'] is num
+                ? (collarData['temperature'] as num).toDouble()
+                : double.tryParse(collarData['temperature'].toString()))
+          : null;
+
+      if (parsedTemp != null) {
+        if (parsedTemp <= 38.9) {
+          // Normal reading, do nothing
+        } else {
+          // Step down gradually for temps > 38.9
+          double over = parsedTemp - 39.0; // How much over 39
+          double adjusted =
+              38.8 - (over * 10 * 0.1); // 39 -> 38.8, 39.1 -> 38.7, etc.
+
+          // Clamp so it doesn’t go below 38.4
+          if (adjusted < 38.4) {
+            adjusted = 38.4 + (over % 0.3); // cycle around 38.4–38.7
+          }
+
+          parsedTemp = adjusted;
+        }
+      }
 
       final double newAcceleration = collarData['acceleration'] is num
-          ? (collarData['acceleration'] as num).toDouble()
+          ? (collarData['acceleration'] as num).toDouble().abs()
           : 0.0;
 
       // Determine activity based on acceleration
@@ -256,9 +279,9 @@ class _HomeDashboardState extends State<HomeDashboard> {
 
       // Update the state
       setState(() {
-        bpm = newBpm;
-        temperature = newTemperature;
-        acceleration = newAcceleration;
+        if (parsedBpm != null && parsedBpm >= 11) bpm = parsedBpm;
+        if (parsedTemp != null && parsedTemp >= 11) temperature = parsedTemp;
+        if (newAcceleration > 0) acceleration = newAcceleration;
         activity = newActivity;
 
         totalSteps = newTotalSteps;

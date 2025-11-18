@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
-import 'dash.dart';
 import 'prof.dart';
 import 'comms.dart';
-import 'sets.dart';
 import '../auth/login_screen.dart';
 
 class VetScreen extends StatefulWidget {
@@ -18,12 +16,7 @@ class _VetScreenState extends State<VetScreen> {
   int _selectedIndex = 0;
   String? currentEmail;
 
-  final List<Widget> _pages = const [
-    DashPage(),
-    VetProfilePage(),
-    CommsPage(),
-    SetsPage(),
-  ];
+  final List<Widget> _pages = const [VetProfilePage(), CommsPage()];
 
   @override
   void initState() {
@@ -129,24 +122,14 @@ class _VetScreenState extends State<VetScreen> {
           backgroundColor: Colors.white,
           destinations: const [
             NavigationDestination(
-              icon: Icon(Icons.dashboard_outlined),
-              selectedIcon: Icon(Icons.dashboard),
-              label: 'Dashboard',
-            ),
-            NavigationDestination(
               icon: Icon(Icons.pets_outlined),
               selectedIcon: Icon(Icons.pets),
               label: 'Profiles',
             ),
             NavigationDestination(
-              icon: Icon(Icons.chat_bubble_outline),
+              icon: Icon(Icons.event),
               selectedIcon: Icon(Icons.chat_bubble),
-              label: 'Comms',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.settings_outlined),
-              selectedIcon: Icon(Icons.settings),
-              label: 'Settings',
+              label: 'Appointments',
             ),
           ],
         ),

@@ -38,6 +38,8 @@ class _VetPetProfilePageState extends State<VetPetProfilePage> {
   List<_ChartPoint> _tempHistory = [];
   late TooltipBehavior _bpmTooltip;
   late TooltipBehavior _tempTooltip;
+  String? ownerEmail;
+  bool _isRemoving = false; // ADDED: To track removal state
 
   @override
   void initState() {
@@ -45,10 +47,27 @@ class _VetPetProfilePageState extends State<VetPetProfilePage> {
     _bpmTooltip = TooltipBehavior(enable: true);
     _tempTooltip = TooltipBehavior(enable: true);
     _loadData();
+    _loadOwnerEmail();
   }
 
   Future<void> _loadData() async {
     await Future.wait([_loadPetDetails(), _loadHistoryData()]);
+  }
+
+  Future<void> _loadOwnerEmail() async {
+    try {
+      final ref = _database.ref('users/${widget.ownerUid}/email');
+      final snapshot = await ref.get();
+      if (snapshot.exists && snapshot.value != null) {
+        if (mounted) {
+          setState(() {
+            ownerEmail = snapshot.value.toString();
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Failed to load owner email: $e');
+    }
   }
 
   Future<void> _loadPetDetails() async {
@@ -156,6 +175,76 @@ class _VetPetProfilePageState extends State<VetPetProfilePage> {
       ? _petData!['name'] as String
       : (widget.initialName ?? 'Pet Profile');
 
+  // ADDED: Function to handle removing access
+  Future<void> _handleRemoveAccess() async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Error: Not signed in.')));
+      return;
+    }
+    // This is the vet's UID
+    final vetUid = currentUser.uid;
+
+    // Show confirmation dialog first
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove Access?'),
+        content: const Text(
+          'Are you sure you want to remove this pet from your list? This will revoke your access to its data.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Remove'),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+          ),
+        ],
+      ),
+    );
+
+    // If the user didn't confirm, do nothing
+    if (confirmed != true) {
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() => _isRemoving = true);
+
+    try {
+      // This is the database path to the vet's UID in the pet's 'sharedWith' map
+      final ref = _database.ref(
+        'users/${widget.ownerUid}/pets/${widget.petId}/sharedWith/$vetUid',
+      );
+
+      // Remove the vet's UID from the map, effectively revoking access
+      await ref.remove();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Access removed successfully.')),
+      );
+      // Go back to the previous screen since access is now gone
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to remove access: $e')));
+    } finally {
+      if (mounted) {
+        setState(() => _isRemoving = false);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -188,13 +277,45 @@ class _VetPetProfilePageState extends State<VetPetProfilePage> {
             ),
             const SizedBox(height: 4),
             Text(
-              'Shared by owner: ${widget.ownerUid}',
+              'Shared by owner: ${ownerEmail ?? widget.ownerUid}',
               style: const TextStyle(color: Colors.white70, fontSize: 12),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
+        // MODIFIED: Added actions button for removal
+        actions: [
+          if (_isRemoving) // Show a loading spinner while removing
+            const Padding(
+              padding: EdgeInsets.all(16.0),
+              child: Center(
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2.0,
+                  ),
+                ),
+              ),
+            )
+          else // Show the menu button
+            PopupMenuButton<String>(
+              onSelected: (value) {
+                if (value == 'remove') {
+                  _handleRemoveAccess(); // Call the remove function
+                }
+              },
+              itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                const PopupMenuItem<String>(
+                  value: 'remove',
+                  child: Text('Remove Access'),
+                ),
+              ],
+              icon: const Icon(Icons.more_vert, color: Colors.white),
+            ),
+        ],
       ),
       body: RefreshIndicator(
         onRefresh: _onRefresh,
@@ -205,8 +326,6 @@ class _VetPetProfilePageState extends State<VetPetProfilePage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _buildSummaryCard(),
-              const SizedBox(height: 16),
-              _buildVitalsTiles(),
               const SizedBox(height: 20),
               _buildChartCard(
                 title: 'Heart Rate (BPM)',
@@ -370,35 +489,6 @@ class _VetPetProfilePageState extends State<VetPetProfilePage> {
     );
   }
 
-  Widget _buildVitalsTiles() {
-    final bpmLatest = _bpmHistory.isNotEmpty ? _bpmHistory.last.value : null;
-    final tempLatest = _tempHistory.isNotEmpty ? _tempHistory.last.value : null;
-
-    return Row(
-      children: [
-        Expanded(
-          child: _VitalsTile(
-            title: 'Current BPM',
-            value: bpmLatest != null ? bpmLatest.toStringAsFixed(0) : '--',
-            subtitle: 'Last recorded heart rate',
-            icon: Icons.favorite,
-            color: const Color(0xFFE91E63),
-          ),
-        ),
-        const SizedBox(width: 14),
-        Expanded(
-          child: _VitalsTile(
-            title: 'Temperature',
-            value: tempLatest != null ? tempLatest.toStringAsFixed(1) : '--',
-            subtitle: 'Most recent body temp',
-            icon: Icons.thermostat,
-            color: const Color(0xFFFF9800),
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildChartCard({
     required String title,
     required String description,
@@ -555,69 +645,6 @@ class _DetailChip extends StatelessWidget {
           Text(
             value,
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _VitalsTile extends StatelessWidget {
-  final String title;
-  final String value;
-  final String subtitle;
-  final IconData icon;
-  final Color color;
-
-  const _VitalsTile({
-    required this.title,
-    required this.value,
-    required this.subtitle,
-    required this.icon,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 14,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.15),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, color: color),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            title,
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            value,
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            subtitle,
-            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
           ),
         ],
       ),
