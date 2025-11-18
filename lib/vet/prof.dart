@@ -31,6 +31,24 @@ class _SharedPet {
   String get displayBreed => breed.isEmpty ? 'N/A' : breed;
 }
 
+class _ShareRequest {
+  final String requestId;
+  final String ownerUid;
+  final String petId;
+  final String petName;
+  final String role;
+  final String ownerEmail;
+
+  const _ShareRequest({
+    required this.requestId,
+    required this.ownerUid,
+    required this.petId,
+    required this.petName,
+    required this.role,
+    required this.ownerEmail,
+  });
+}
+
 class VetProfilePage extends StatefulWidget {
   const VetProfilePage({super.key});
 
@@ -107,6 +125,56 @@ class _VetProfilePageState extends State<VetProfilePage> {
     sharedPetsRef = _database.ref("users");
   }
 
+  Future<void> _acceptShareRequest(_ShareRequest request) async {
+    try {
+      // Move request to shared_with
+      await _database
+          .ref("users/${request.ownerUid}/pets/${request.petId}/shared_with/$_uid")
+          .set({
+            "email": _currentUser?.email ?? "",
+            "role": request.role,
+          });
+
+      // Remove the request
+      await _database
+          .ref("users/$_uid/share_requests/${request.requestId}")
+          .remove();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Accepted share request for ${request.petName}")),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error accepting request: $e")),
+        );
+      }
+    }
+  }
+
+  Future<void> _rejectShareRequest(_ShareRequest request) async {
+    try {
+      // Remove the request
+      await _database
+          .ref("users/$_uid/share_requests/${request.requestId}")
+          .remove();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Rejected share request for ${request.petName}")),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error rejecting request: $e")),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     // Add a null-check for the user UID
@@ -118,9 +186,125 @@ class _VetProfilePageState extends State<VetProfilePage> {
 
     return Scaffold(
       backgroundColor: Colors.grey[50],
-      body: StreamBuilder(
-        stream: sharedPetsRef.onValue,
-        builder: (context, snapshot) {
+      body: Column(
+        children: [
+          // Share Requests Section
+          StreamBuilder(
+            stream: _database.ref("users/$_uid/share_requests").onValue,
+            builder: (context, requestsSnapshot) {
+              if (requestsSnapshot.hasError) {
+                return const SizedBox.shrink();
+              }
+
+              if (!requestsSnapshot.hasData || 
+                  requestsSnapshot.data?.snapshot.value == null) {
+                return const SizedBox.shrink();
+              }
+
+              final requestsData = Map<dynamic, dynamic>.from(
+                requestsSnapshot.data!.snapshot.value as Map,
+              );
+
+              final List<_ShareRequest> requests = [];
+              requestsData.forEach((requestId, requestData) {
+                if (requestData is Map) {
+                  requests.add(
+                    _ShareRequest(
+                      requestId: requestId.toString(),
+                      ownerUid: requestData['ownerUid']?.toString() ?? '',
+                      petId: requestData['petId']?.toString() ?? '',
+                      petName: requestData['petName']?.toString() ?? 'Unknown Pet',
+                      role: requestData['role']?.toString() ?? 'vet',
+                      ownerEmail: requestData['ownerEmail']?.toString() ?? '',
+                    ),
+                  );
+                }
+              });
+
+              if (requests.isEmpty) {
+                return const SizedBox.shrink();
+              }
+
+              return ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 300),
+                child: Container(
+                  margin: const EdgeInsets.fromLTRB(16, 20, 16, 12),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.orange[50],
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.orange[200]!),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.notifications_active, color: Colors.orange[700]),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Pending Share Requests (${requests.length})',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.orange[900],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Flexible(
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: requests.length,
+                          itemBuilder: (context, index) {
+                            final request = requests[index];
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              child: ListTile(
+                                title: Text(
+                                  request.petName,
+                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('From: ${request.ownerEmail}'),
+                                    Text('Role: ${request.role.toUpperCase()}'),
+                                  ],
+                                ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.check, color: Colors.green),
+                                      onPressed: () => _acceptShareRequest(request),
+                                      tooltip: 'Accept',
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.close, color: Colors.red),
+                                      onPressed: () => _rejectShareRequest(request),
+                                      tooltip: 'Reject',
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+          // Shared Pets Section
+          Expanded(
+            child: StreamBuilder(
+              stream: sharedPetsRef.onValue,
+              builder: (context, snapshot) {
           if (snapshot.hasError) {
             return const Center(child: Text("Error loading pets"));
           }
@@ -184,7 +368,7 @@ class _VetProfilePageState extends State<VetProfilePage> {
           return Column(
             children: [
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                 child: Container(
                   width: double.infinity,
                   decoration: const BoxDecoration(
@@ -417,7 +601,10 @@ class _VetProfilePageState extends State<VetProfilePage> {
               ),
             ],
           );
-        },
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
