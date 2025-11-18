@@ -1,498 +1,649 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+
+import 'vet_pet.dart'; // Assuming this file exists and contains VetPetProfilePage
 
 const String _databaseURL =
     'https://smartcollar-c69c1-default-rtdb.asia-southeast1.firebasedatabase.app';
 
-class GpsTrackingPage extends StatefulWidget {
-  final Map<String, dynamic> pet;
-  final String? petId;
+class _SharedPet {
+  final String petId;
+  final String name;
+  final String species;
+  final String breed;
+  final String ageLabel;
+  final String ownerUid;
+  final String role;
 
-  const GpsTrackingPage({super.key, required this.pet, this.petId});
+  const _SharedPet({
+    required this.petId,
+    required this.name,
+    required this.species,
+    required this.breed,
+    required this.ageLabel,
+    required this.ownerUid,
+    required this.role,
+  });
 
-  @override
-  State<GpsTrackingPage> createState() => _GpsTrackingPageState();
+  String get displaySpecies => species.isEmpty ? 'Unknown' : species;
+
+  String get displayBreed => breed.isEmpty ? 'N/A' : breed;
 }
 
-class _GpsTrackingPageState extends State<GpsTrackingPage> {
-  LatLng? currentLocation;
-  late DatabaseReference gpsRef;
-  final MapController _mapController = MapController();
+class _ShareRequest {
+  final String requestId;
+  final String ownerUid;
+  final String petId;
+  final String petName;
+  final String role;
+  final String ownerEmail;
 
-  // Geofence
-  LatLng? geofenceCenter;
-  double geofenceRadius = 0.0;
-  bool selectingGeofence = false;
-  bool isOutsideFence = false;
+  const _ShareRequest({
+    required this.requestId,
+    required this.ownerUid,
+    required this.petId,
+    required this.petName,
+    required this.role,
+    required this.ownerEmail,
+  });
+}
 
-  // Vet locations
-  bool showVets = false;
-  final List<Map<String, dynamic>> vetClinics = [
-    {
-      'name': 'JLC Veterinary Clinic',
-      'location': LatLng(13.779836418522393, 121.06738496992348),
-    },
-    {
-      'name': 'Oasis Animal Clinic',
-      'location': LatLng(13.792654860607161, 121.07030271596126),
-    },
-    {
-      'name': 'Elgin\'s Animal Clinic',
-      'location': LatLng(13.801815599203126, 121.07232400957385),
-    },
-    {
-      'name': 'Petaholic Veterinary Clinic',
-      'location': LatLng(13.773724124891846, 121.06648752301227),
-    },
-    {
-      'name': 'Hills Pet Station',
-      'location': LatLng(13.76713839441924, 121.06108018981469),
-    },
-  ];
+class VetProfilePage extends StatefulWidget {
+  const VetProfilePage({super.key});
+
+  @override
+  State<VetProfilePage> createState() => _VetProfilePageState();
+}
+
+class _VetProfilePageState extends State<VetProfilePage> {
+  FirebaseDatabase get _database => FirebaseDatabase.instanceFor(
+    app: FirebaseAuth.instance.app,
+    databaseURL: _databaseURL,
+  );
+
+  User? get _currentUser => FirebaseAuth.instance.currentUser;
+  String? get _uid => _currentUser?.uid;
+
+  late DatabaseReference sharedPetsRef;
+
+  IconData _speciesIcon(String species) {
+    final normalized = species.toLowerCase();
+    if (normalized.contains('cat')) return Icons.pets; // cat icon fallback
+    if (normalized.contains('bird')) return Icons.flutter_dash;
+    if (normalized.contains('fish')) return Icons.water;
+    if (normalized.contains('horse')) return Icons.airline_stops;
+    return Icons.pets; // Default
+  }
+
+  // --- COLOR FIX ---
+  // Reverted to shades of pink as requested
+  Color _speciesColor(String species) {
+    return Colors.pink[300] ?? Colors.pink;
+  }
+
+  LinearGradient _cardGradient(Color base) {
+    return LinearGradient(
+      colors: [base.withOpacity(0.18), base.withOpacity(0.05)],
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+    );
+  }
+
+  double? _toDouble(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value);
+    return null;
+  }
+
+  String _buildAgeLabel(dynamic value) {
+    final age = _toDouble(value);
+    if (age == null) return 'Unknown age';
+    final suffix = age == 1 ? 'yr' : 'yrs';
+    final display = age % 1 == 0
+        ? age.toInt().toString()
+        : age.toStringAsFixed(1);
+    return '$display $suffix';
+  }
+
+  String _titleCase(String value) {
+    if (value.isEmpty) return value;
+    return value
+        .split(RegExp(r'\s+'))
+        .map((word) {
+          if (word.isEmpty) return word;
+          final lower = word.toLowerCase();
+          return lower[0].toUpperCase() + lower.substring(1);
+        })
+        .join(' ');
+  }
 
   @override
   void initState() {
     super.initState();
-    _setupGpsListener();
-    _loadGeofenceFromFirebase();
+    sharedPetsRef = _database.ref("users");
   }
 
-  // --- Listen for live GPS updates ---
-  void _setupGpsListener() {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid != null && widget.petId != null) {
-      final database = FirebaseDatabase.instanceFor(
-        app: FirebaseAuth.instance.app,
-        databaseURL: _databaseURL,
-      );
-      gpsRef = database.ref(
-        "users/$uid/pets/${widget.petId}/collar_data/location",
-      );
-
-      gpsRef.onValue.listen((event) {
-        final data = event.snapshot.value as Map?;
-        if (data != null && mounted) {
-          final lat = double.tryParse(data['latitude'].toString()) ?? 0.0;
-          final lng = double.tryParse(data['longitude'].toString()) ?? 0.0;
-          setState(() {
-            currentLocation = LatLng(lat, lng);
+  Future<void> _acceptShareRequest(_ShareRequest request) async {
+    try {
+      // Move request to shared_with
+      await _database
+          .ref("users/${request.ownerUid}/pets/${request.petId}/shared_with/$_uid")
+          .set({
+            "email": _currentUser?.email ?? "",
+            "role": request.role,
           });
 
-          // Check geofence status
-          if (geofenceCenter != null && geofenceRadius > 0) {
-            final distance = const Distance().as(
-              LengthUnit.Meter,
-              geofenceCenter!,
-              currentLocation!,
-            );
+      // Remove the request
+      await _database
+          .ref("users/$_uid/share_requests/${request.requestId}")
+          .remove();
 
-            setState(() {
-              isOutsideFence = distance > geofenceRadius;
-            });
-          }
-        }
-      });
-    }
-  }
-
-  // --- Start geofence selection ---
-  void _startGeofenceSelection() {
-    setState(() {
-      selectingGeofence = true;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Tap on the map to set your home base.")),
-    );
-  }
-
-  // --- Ask for radius input ---
-  void _askForRadius() async {
-    double tempRadius = 100.0;
-    TextEditingController radiusController = TextEditingController();
-
-    await showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text("Set Geofence Radius (meters)"),
-          content: TextField(
-            controller: radiusController,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(
-              hintText: "Enter radius in meters",
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                if (radiusController.text.isNotEmpty) {
-                  tempRadius = double.tryParse(radiusController.text) ?? 100.0;
-                }
-                Navigator.pop(context);
-              },
-              child: const Text("OK"),
-            ),
-          ],
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Accepted share request for ${request.petName}")),
         );
-      },
-    );
-
-    setState(() {
-      geofenceRadius = tempRadius;
-      selectingGeofence = false;
-    });
-
-    // Save geofence to Firebase
-    _saveGeofenceToFirebase();
-  }
-
-  // --- Save geofence data to Firebase ---
-  Future<void> _saveGeofenceToFirebase() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid != null && widget.petId != null && geofenceCenter != null) {
-      final database = FirebaseDatabase.instanceFor(
-        app: FirebaseAuth.instance.app,
-        databaseURL: _databaseURL,
-      );
-      final ref = database.ref("users/$uid/pets/${widget.petId}/geofence");
-
-      await ref.set({
-        "latitude": geofenceCenter!.latitude,
-        "longitude": geofenceCenter!.longitude,
-        "radius": geofenceRadius,
-        "timestamp": ServerValue.timestamp,
-      });
-    }
-  }
-
-  // --- Load existing geofence from Firebase ---
-  Future<void> _loadGeofenceFromFirebase() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid != null && widget.petId != null) {
-      final database = FirebaseDatabase.instanceFor(
-        app: FirebaseAuth.instance.app,
-        databaseURL: _databaseURL,
-      );
-      final ref = database.ref("users/$uid/pets/${widget.petId}/geofence");
-
-      final snapshot = await ref.get();
-      if (snapshot.exists) {
-        final data = snapshot.value as Map;
-        setState(() {
-          geofenceCenter = LatLng(
-            double.tryParse(data["latitude"].toString()) ?? 0.0,
-            double.tryParse(data["longitude"].toString()) ?? 0.0,
-          );
-          geofenceRadius = double.tryParse(data["radius"].toString()) ?? 0.0;
-        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error accepting request: $e")),
+        );
       }
     }
   }
 
-  // --- Focus map to vet ---
-  void _focusOnVet(LatLng vetLocation) {
-    _mapController.move(vetLocation, 17);
+  Future<void> _rejectShareRequest(_ShareRequest request) async {
+    try {
+      // Remove the request
+      await _database
+          .ref("users/$_uid/share_requests/${request.requestId}")
+          .remove();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Rejected share request for ${request.petName}")),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error rejecting request: $e")),
+        );
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (widget.pet.isEmpty) {
-      return Center(
-        child: Text(
-          "Please select a pet from the drawer to view GPS tracking.",
-          style: TextStyle(fontSize: 16, color: Colors.grey.shade700),
-          textAlign: TextAlign.center,
-        ),
+    // Add a null-check for the user UID
+    if (_uid == null) {
+      return const Scaffold(
+        body: Center(child: Text("Error: You are not logged in.")),
       );
     }
 
-    // final petName = widget.pet['name'] ?? 'Your Pet'; // header removed
-    return Container(
-      color: Colors.grey.shade50,
-      child: SingleChildScrollView(
-        child: Column(
-          children: [
-            // header removed per request
+    return Scaffold(
+      backgroundColor: Colors.grey[50],
+      body: Column(
+        children: [
+          // Share Requests Section
+          StreamBuilder(
+            stream: _database.ref("users/$_uid/share_requests").onValue,
+            builder: (context, requestsSnapshot) {
+              if (requestsSnapshot.hasError) {
+                return const SizedBox.shrink();
+              }
 
-            // --- Map Card ---
-            Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: Card(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                elevation: 6,
-                shadowColor: Colors.black12,
-                child: Stack(
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(16),
-                      child: SizedBox(
-                        height: 360,
-                        child: currentLocation == null
-                            ? const Center(child: CircularProgressIndicator())
-                            : FlutterMap(
-                                mapController: _mapController,
-                                options: MapOptions(
-                                  initialCenter: currentLocation!,
-                                  initialZoom: 15,
-                                  onTap: (tapPosition, point) {
-                                    if (selectingGeofence) {
-                                      setState(() {
-                                        geofenceCenter = point;
-                                      });
-                                      _askForRadius();
-                                    }
-                                  },
+              if (!requestsSnapshot.hasData || 
+                  requestsSnapshot.data?.snapshot.value == null) {
+                return const SizedBox.shrink();
+              }
+
+              final requestsData = Map<dynamic, dynamic>.from(
+                requestsSnapshot.data!.snapshot.value as Map,
+              );
+
+              final List<_ShareRequest> requests = [];
+              requestsData.forEach((requestId, requestData) {
+                if (requestData is Map) {
+                  requests.add(
+                    _ShareRequest(
+                      requestId: requestId.toString(),
+                      ownerUid: requestData['ownerUid']?.toString() ?? '',
+                      petId: requestData['petId']?.toString() ?? '',
+                      petName: requestData['petName']?.toString() ?? 'Unknown Pet',
+                      role: requestData['role']?.toString() ?? 'vet',
+                      ownerEmail: requestData['ownerEmail']?.toString() ?? '',
+                    ),
+                  );
+                }
+              });
+
+              if (requests.isEmpty) {
+                return const SizedBox.shrink();
+              }
+
+              return ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 300),
+                child: Container(
+                  margin: const EdgeInsets.fromLTRB(16, 20, 16, 12),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.orange[50],
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.orange[200]!),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.notifications_active, color: Colors.orange[700]),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Pending Share Requests (${requests.length})',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.orange[900],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Flexible(
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: requests.length,
+                          itemBuilder: (context, index) {
+                            final request = requests[index];
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              child: ListTile(
+                                title: Text(
+                                  request.petName,
+                                  style: const TextStyle(fontWeight: FontWeight.bold),
                                 ),
-                                children: [
-                                  TileLayer(
-                                    urlTemplate:
-                                        "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-                                    subdomains: const ['a', 'b', 'c', 'd'],
-                                    userAgentPackageName:
-                                        'com.example.smartcollar_mobileapp',
-                                  ),
-                                  if (geofenceCenter != null)
-                                    CircleLayer(
-                                      circles: [
-                                        CircleMarker(
-                                          point: geofenceCenter!,
-                                          radius: geofenceRadius / 2,
-                                          useRadiusInMeter: true,
-                                          color: isOutsideFence
-                                              ? Colors.red.withOpacity(0.25)
-                                              : Colors.green.withOpacity(0.25),
-                                          borderColor: isOutsideFence
-                                              ? Colors.red
-                                              : Colors.green,
-                                          borderStrokeWidth: 2,
-                                        ),
-                                      ],
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('From: ${request.ownerEmail}'),
+                                    Text('Role: ${request.role.toUpperCase()}'),
+                                  ],
+                                ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.check, color: Colors.green),
+                                      onPressed: () => _acceptShareRequest(request),
+                                      tooltip: 'Accept',
                                     ),
-                                  MarkerLayer(
-                                    markers: [
-                                      Marker(
-                                        point: currentLocation!,
-                                        width: 50,
-                                        height: 50,
-                                        child: Icon(
-                                          Icons.pets,
-                                          color: isOutsideFence
-                                              ? Colors.red
-                                              : Colors.pink,
-                                          size: 40,
-                                        ),
-                                      ),
-                                      if (showVets)
-                                        ...vetClinics.map(
-                                          (vet) => Marker(
-                                            point: vet['location'],
-                                            width: 140,
-                                            height: 90,
-                                            child: Column(
-                                              children: [
-                                                const Icon(
-                                                  Icons.location_on,
-                                                  color: Colors.blue,
-                                                  size: 40,
-                                                ),
-                                                Container(
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                        horizontal: 6,
-                                                        vertical: 2,
-                                                      ),
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.white,
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          6,
-                                                        ),
-                                                    boxShadow: [
-                                                      BoxShadow(
-                                                        color: Colors.black
-                                                            .withOpacity(0.2),
-                                                        blurRadius: 4,
-                                                      ),
-                                                    ],
-                                                  ),
-                                                  child: Text(
-                                                    vet['name'],
-                                                    textAlign: TextAlign.center,
-                                                    style: const TextStyle(
-                                                      fontSize: 10,
-                                                      fontWeight:
-                                                          FontWeight.bold,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                    ],
+                                    IconButton(
+                                      icon: const Icon(Icons.close, color: Colors.red),
+                                      onPressed: () => _rejectShareRequest(request),
+                                      tooltip: 'Reject',
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+          // Shared Pets Section
+          Expanded(
+            child: StreamBuilder(
+              stream: sharedPetsRef.onValue,
+              builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return const Center(child: Text("Error loading pets"));
+          }
+
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (!snapshot.hasData || snapshot.data?.snapshot.value == null) {
+            return const Center(child: Text("No pets shared with you yet."));
+          }
+
+          final data = Map<dynamic, dynamic>.from(
+            snapshot.data!.snapshot.value as Map,
+          );
+
+          final List<_SharedPet> sharedPets = [];
+
+          data.forEach((ownerUid, ownerData) {
+            if (ownerData is Map && ownerData["pets"] != null) {
+              final pets = Map<dynamic, dynamic>.from(ownerData["pets"] as Map);
+              pets.forEach((petId, petData) {
+                if (petData is Map && petData["shared_with"] != null) {
+                  final sharedWith = Map<dynamic, dynamic>.from(
+                    petData["shared_with"] as Map,
+                  );
+                  if (sharedWith.containsKey(_uid!)) {
+                    final sharedEntry = sharedWith[_uid!];
+                    final role =
+                        sharedEntry is Map && sharedEntry['role'] != null
+                        ? sharedEntry['role'].toString()
+                        : 'vet';
+                    final name = petData['name']?.toString() ?? 'Unnamed Pet';
+                    final species = petData['species']?.toString() ?? 'Unknown';
+                    final breed = petData['breed']?.toString() ?? '';
+                    final ageLabel = _buildAgeLabel(petData['age']);
+
+                    sharedPets.add(
+                      _SharedPet(
+                        petId: petId.toString(),
+                        name: name,
+                        species: species,
+                        breed: breed,
+                        ageLabel: ageLabel,
+                        ownerUid: ownerUid.toString(),
+                        role: role,
+                      ),
+                    );
+                  }
+                }
+              });
+            }
+          });
+
+          if (sharedPets.isEmpty) {
+            return const Center(child: Text("No pets shared with you."));
+          }
+
+          sharedPets.sort((a, b) => a.name.compareTo(b.name));
+
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: Container(
+                  width: double.infinity,
+                  decoration: const BoxDecoration(
+                    // --- COLOR FIX ---
+                    // Reverted to shades of pink
+                    gradient: LinearGradient(
+                      colors: [Colors.pinkAccent, Color(0xFFF06292)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.all(Radius.circular(20)),
+                  ),
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 48,
+                            height: 48,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.2),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              // --- COLOR FIX ---
+                              // Changed icon to be pet-themed
+                              Icons.pets_rounded,
+                              color: Colors.white,
+                              size: 26,
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Shared Pets Overview',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  sharedPets.length == 1
+                                      ? '1 pet is currently shared with you.'
+                                      : '${sharedPets.length} pets are currently shared with you.',
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final crossAxisCount = 2;
+                    // Adjusted aspect ratio slightly
+                    final childAspectRatio = constraints.maxWidth >= 480
+                        ? 0.8
+                        : 0.75;
+
+                    return GridView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: crossAxisCount,
+                        crossAxisSpacing: 16,
+                        mainAxisSpacing: 16,
+                        childAspectRatio: childAspectRatio,
+                      ),
+                      itemCount: sharedPets.length,
+                      itemBuilder: (context, index) {
+                        final pet = sharedPets[index];
+                        final speciesColor = _speciesColor(pet.displaySpecies);
+                        final speciesLabel = _titleCase(pet.displaySpecies);
+                        final breedLabel = _titleCase(pet.displayBreed);
+
+                        return Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(24),
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => VetPetProfilePage(
+                                    ownerUid: pet.ownerUid,
+                                    petId: pet.petId,
+                                    initialName: pet.name,
+                                    initialSpecies: pet.displaySpecies,
+                                  ),
+                                ),
+                              );
+                            },
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 250),
+                              curve: Curves.easeOut,
+                              decoration: BoxDecoration(
+                                gradient: _cardGradient(speciesColor),
+                                borderRadius: BorderRadius.circular(24),
+                                border: Border.all(
+                                  color: speciesColor.withOpacity(0.2),
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: speciesColor.withOpacity(0.15),
+                                    blurRadius: 18,
+                                    offset: const Offset(0, 10),
                                   ),
                                 ],
                               ),
-                      ),
-                    ),
-                    // Attribution
-                    Positioned(
-                      left: 8,
-                      bottom: 8,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 3,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.8),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: const Text(
-                          '© OpenStreetMap contributors, © CARTO',
-                          style: TextStyle(fontSize: 9, color: Colors.black87),
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      right: 12,
-                      bottom: 12,
-                      child: FloatingActionButton.small(
-                        heroTag: 'recenter_map',
-                        backgroundColor: Colors.white,
-                        foregroundColor: const Color(0xFFE91E63),
-                        onPressed: () {
-                          if (currentLocation != null) {
-                            _mapController.move(currentLocation!, 15);
-                          }
-                        },
-                        child: const Icon(Icons.my_location),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            // --- Controls ---
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: () {
-                        setState(() {
-                          showVets = !showVets;
-                        });
-                      },
-                      style: FilledButton.styleFrom(
-                        backgroundColor: showVets
-                            ? Colors.blue
-                            : const Color(0xFFE91E63),
-                      ),
-                      icon: Icon(
-                        showVets ? Icons.visibility_off : Icons.local_hospital,
-                      ),
-                      label: Text(showVets ? 'Hide Clinics' : 'Nearby Clinics'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _startGeofenceSelection,
-                      icon: const Icon(Icons.shield_outlined),
-                      label: const Text('Set Geofence'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 10),
-
-            // --- Geofence Status ---
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Card(
-                elevation: 3,
-                shadowColor: Colors.black12,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor:
-                        (isOutsideFence ? Colors.red : Colors.green)
-                            .withOpacity(0.15),
-                    child: Icon(
-                      isOutsideFence ? Icons.error : Icons.check_circle,
-                      color: isOutsideFence ? Colors.red : Colors.green,
-                    ),
-                  ),
-                  title: Text(
-                    isOutsideFence
-                        ? 'Collar is outside the geofence'
-                        : (geofenceCenter != null
-                              ? 'Collar is inside the geofence'
-                              : 'No geofence set'),
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  subtitle: geofenceCenter != null
-                      ? Text('Radius: ${geofenceRadius.toStringAsFixed(0)} m')
-                      : null,
-                ),
-              ),
-            ),
-
-            // --- Vet List ---
-            if (showVets)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 16),
-                child: Card(
-                  elevation: 3,
-                  shadowColor: Colors.black12,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: SizedBox(
-                    height: 220,
-                    child: ListView.builder(
-                      itemCount: vetClinics.length,
-                      itemBuilder: (context, index) {
-                        final vet = vetClinics[index];
-                        return ListTile(
-                          leading: const Icon(
-                            Icons.local_hospital,
-                            color: Colors.blue,
+                              padding: const EdgeInsets.all(18),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Container(
+                                        width: 56,
+                                        height: 56,
+                                        decoration: BoxDecoration(
+                                          color: speciesColor.withOpacity(0.18),
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: Icon(
+                                          _speciesIcon(pet.displaySpecies),
+                                          color: speciesColor.darken(0.05),
+                                          size: 30,
+                                        ),
+                                      ),
+                                      const Spacer(),
+                                      Icon(
+                                        Icons.chevron_right_rounded,
+                                        color: speciesColor.darken(0.2),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 14),
+                                  Text(
+                                    pet.name,
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 8),
+                                  //
+                                  // --- OVERFLOW FIX ---
+                                  //
+                                  // Wrapped the variable-height content in an
+                                  // Expanded + SingleChildScrollView to
+                                  // prevent all overflow errors.
+                                  //
+                                  Expanded(
+                                    child: SingleChildScrollView(
+                                      physics: const BouncingScrollPhysics(),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Wrap(
+                                            spacing: 8,
+                                            runSpacing: 8,
+                                            children: [
+                                              _ChipLabel(
+                                                label: speciesLabel,
+                                                color: speciesColor,
+                                              ),
+                                              _ChipLabel(
+                                                label: breedLabel,
+                                                color: speciesColor.withOpacity(
+                                                  0.85,
+                                                ),
+                                              ),
+                                              _ChipLabel(
+                                                label: pet.role.toUpperCase(),
+                                                color: speciesColor.darken(
+                                                  0.12,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 12),
+                                          Text(
+                                            'Age: ${pet.ageLabel}',
+                                            style: const TextStyle(
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            'Owner UID: ${pet.ownerUid}',
+                                            style: const TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.black87,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
-                          title: Text(
-                            vet['name'],
-                            style: const TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                          subtitle: Text(
-                            "${vet['location'].latitude}, ${vet['location'].longitude}",
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.navigation_outlined),
-                            onPressed: () => _focusOnVet(vet['location']),
-                          ),
-                          onTap: () => _focusOnVet(vet['location']),
                         );
                       },
-                    ),
-                  ),
+                    );
+                  },
                 ),
               ),
-          ],
-        ),
+            ],
+          );
+              },
+            ),
+          ),
+        ],
       ),
     );
+  }
+}
+
+class _ChipLabel extends StatelessWidget {
+  final String label;
+  final Color color;
+
+  const _ChipLabel({required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.18),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: color.darken(0.1),
+          letterSpacing: 0.4,
+        ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
+}
+
+extension _ColorShade on Color {
+  Color darken([double amount = 0.2]) {
+    final hsl = HSLColor.fromColor(this);
+    final hslDark = hsl.withLightness((hsl.lightness - amount).clamp(0.0, 1.0));
+    return hslDark.toColor();
   }
 }
