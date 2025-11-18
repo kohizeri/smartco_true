@@ -33,7 +33,6 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
   // Last seen location
   LatLng? lastSeenLocation;
 
-  // Vet locations
   bool showVets = false;
   final List<Map<String, dynamic>> vetClinics = [
     {
