@@ -3,6 +3,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:geolocator/geolocator.dart';
 
 const String _databaseURL =
     'https://smartcollar-c69c1-default-rtdb.asia-southeast1.firebasedatabase.app';
@@ -18,7 +19,8 @@ class GpsTrackingPage extends StatefulWidget {
 }
 
 class _GpsTrackingPageState extends State<GpsTrackingPage> {
-  LatLng? currentLocation;
+  LatLng? currentLocation; // Pet location
+  LatLng? userLocation; // User's current location
   late DatabaseReference gpsRef;
   final MapController _mapController = MapController();
 
@@ -58,6 +60,85 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
     super.initState();
     _setupGpsListener();
     _loadGeofenceFromFirebase();
+    _getUserLocation();
+  }
+
+  // --- Get user's current location ---
+  Future<void> _getUserLocation() async {
+    try {
+      // Check if location services are enabled
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Location services are disabled. Please enable them.',
+              ),
+            ),
+          );
+        }
+        return;
+      }
+
+      // Check location permissions
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Location permissions are denied.')),
+            );
+          }
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Location permissions are permanently denied. Please enable them in settings.',
+              ),
+            ),
+          );
+        }
+        return;
+      }
+
+      // Get current position
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      if (mounted) {
+        setState(() {
+          userLocation = LatLng(position.latitude, position.longitude);
+        });
+      }
+
+      // Listen to position updates
+      Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 10, // Update every 10 meters
+        ),
+      ).listen((Position position) {
+        if (mounted) {
+          setState(() {
+            userLocation = LatLng(position.latitude, position.longitude);
+          });
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error getting location: $e')));
+      }
+    }
   }
 
   // --- Listen for live GPS updates ---
@@ -75,11 +156,31 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
       gpsRef.onValue.listen((event) {
         final data = event.snapshot.value as Map?;
         if (data != null && mounted) {
-          final lat = double.tryParse(data['latitude'].toString()) ?? 0.0;
-          final lng = double.tryParse(data['longitude'].toString()) ?? 0.0;
-          setState(() {
-            currentLocation = LatLng(lat, lng);
-          });
+          final latStr = data['latitude']?.toString();
+          final lngStr = data['longitude']?.toString();
+
+          if (latStr != null && lngStr != null) {
+            final lat = double.tryParse(latStr);
+            final lng = double.tryParse(lngStr);
+
+            if (lat != null && lng != null && mounted) {
+              setState(() {
+                currentLocation = LatLng(lat, lng);
+              });
+
+              // Check geofence
+              if (geofenceCenter != null && geofenceRadius > 0) {
+                final distance = const Distance().as(
+                  LengthUnit.Meter,
+                  geofenceCenter!,
+                  currentLocation!,
+                );
+                setState(() {
+                  isOutsideFence = distance > geofenceRadius;
+                });
+              }
+            }
+          }
 
           // Check geofence status
           if (geofenceCenter != null && geofenceRadius > 0) {
@@ -251,17 +352,17 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
                                 children: [
                                   TileLayer(
                                     urlTemplate:
-                                        "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-                                    subdomains: const ['a', 'b', 'c', 'd'],
+                                        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                                     userAgentPackageName:
                                         'com.example.smartcollar_mobileapp',
+                                    maxZoom: 19,
                                   ),
                                   if (geofenceCenter != null)
                                     CircleLayer(
                                       circles: [
                                         CircleMarker(
                                           point: geofenceCenter!,
-                                          radius: geofenceRadius / 2,
+                                          radius: geofenceRadius,
                                           useRadiusInMeter: true,
                                           color: isOutsideFence
                                               ? Colors.red.withOpacity(0.25)
@@ -275,6 +376,7 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
                                     ),
                                   MarkerLayer(
                                     markers: [
+                                      // Pet location marker
                                       Marker(
                                         point: currentLocation!,
                                         width: 50,
@@ -287,6 +389,36 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
                                           size: 40,
                                         ),
                                       ),
+                                      // User location marker
+                                      if (userLocation != null)
+                                        Marker(
+                                          point: userLocation!,
+                                          width: 50,
+                                          height: 50,
+                                          child: Container(
+                                            decoration: BoxDecoration(
+                                              color: Colors.blue,
+                                              shape: BoxShape.circle,
+                                              border: Border.all(
+                                                color: Colors.white,
+                                                width: 3,
+                                              ),
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  color: Colors.blue
+                                                      .withOpacity(0.5),
+                                                  blurRadius: 8,
+                                                  spreadRadius: 2,
+                                                ),
+                                              ],
+                                            ),
+                                            child: const Icon(
+                                              Icons.person,
+                                              color: Colors.white,
+                                              size: 28,
+                                            ),
+                                          ),
+                                        ),
                                       if (showVets)
                                         ...vetClinics.map(
                                           (vet) => Marker(
@@ -354,7 +486,7 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: const Text(
-                          '© OpenStreetMap contributors, © CARTO',
+                          '© OpenStreetMap contributors',
                           style: TextStyle(fontSize: 9, color: Colors.black87),
                         ),
                       ),
