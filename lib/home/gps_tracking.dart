@@ -63,7 +63,6 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
     super.initState();
     _setupGpsListener();
     _loadGeofenceFromFirebase();
-    _loadLastSeenFromFirebase();
     _getUserLocation();
   }
 
@@ -311,29 +310,6 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
             content: Text('No pet location available to save.'),
           ),
         );
-      }
-    }
-  }
-
-  // --- Load last seen location from Firebase ---
-  Future<void> _loadLastSeenFromFirebase() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid != null && widget.petId != null) {
-      final database = FirebaseDatabase.instanceFor(
-        app: FirebaseAuth.instance.app,
-        databaseURL: _databaseURL,
-      );
-      final ref = database.ref("users/$uid/pets/${widget.petId}/last_seen");
-
-      final snapshot = await ref.get();
-      if (snapshot.exists) {
-        final data = snapshot.value as Map;
-        setState(() {
-          lastSeenLocation = LatLng(
-            double.tryParse(data["latitude"].toString()) ?? 0.0,
-            double.tryParse(data["longitude"].toString()) ?? 0.0,
-          );
-        });
       }
     }
   }
