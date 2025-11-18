@@ -323,17 +323,62 @@ class _SettingsPageState extends State<SettingsPage> {
                   return;
                 }
 
-                // ✅ Save UID + email + role under shared_with
+                // ✅ Create share request instead of directly sharing
+                final ownerUid = FirebaseAuth.instance.currentUser!.uid;
+                final requestId = "${ownerUid}_${widget.petId}";
+                
+                // Check if pet is already shared with this user
+                final sharedWithSnapshot = await _database
+                    .ref("users/$ownerUid/pets/${widget.petId}/shared_with/$targetUid")
+                    .get();
+                
+                if (sharedWithSnapshot.exists) {
+                  if (context.mounted) {
+                    Navigator.of(ctx).pop();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("Pet is already shared with this user")),
+                    );
+                  }
+                  return;
+                }
+                
+                // Check if there's already a pending request
+                final existingRequestSnapshot = await _database
+                    .ref("users/$targetUid/share_requests/$requestId")
+                    .get();
+                
+                if (existingRequestSnapshot.exists) {
+                  if (context.mounted) {
+                    Navigator.of(ctx).pop();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("A share request is already pending for this user")),
+                    );
+                  }
+                  return;
+                }
+                
+                // Get pet name for the request
+                final petSnapshot = await _database
+                    .ref("users/$ownerUid/pets/${widget.petId}")
+                    .get();
+                final petName = petSnapshot.child("name").value?.toString() ?? "Unknown Pet";
+                
+                // Store request under target user's share_requests
                 await _database
-                    .ref(
-                      "users/${FirebaseAuth.instance.currentUser!.uid}/pets/${widget.petId}/shared_with/$targetUid",
-                    )
-                    .set({"email": targetEmail, "role": selectedRole});
+                    .ref("users/$targetUid/share_requests/$requestId")
+                    .set({
+                      "ownerUid": ownerUid,
+                      "petId": widget.petId,
+                      "petName": petName,
+                      "role": selectedRole,
+                      "ownerEmail": FirebaseAuth.instance.currentUser?.email ?? "",
+                      "requestedAt": ServerValue.timestamp,
+                    });
 
                 if (context.mounted) {
                   Navigator.of(ctx).pop();
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text("Pet shared with $targetEmail")),
+                    SnackBar(content: Text("Share request sent to $targetEmail")),
                   );
                 }
               },
