@@ -235,9 +235,9 @@ class _HomeDashboardState extends State<HomeDashboard> {
 
       // Determine activity based on acceleration
       String newActivity;
-      if (newAcceleration > 1.0) {
+      if (newAcceleration > 5.0) {
         newActivity = "Active";
-      } else if (newAcceleration > 0.2) {
+      } else if (newAcceleration > 1.0) {
         newActivity = "Moving";
       } else {
         newActivity = "Resting";
@@ -280,10 +280,36 @@ class _HomeDashboardState extends State<HomeDashboard> {
       // Update the state
       setState(() {
         if (parsedBpm != null && parsedBpm >= 11) bpm = parsedBpm;
-        if (parsedTemp != null && parsedTemp >= 11) temperature = parsedTemp;
-        if (newAcceleration > 0) acceleration = newAcceleration;
-        activity = newActivity;
 
+        // Later, when updating the state:
+        if (parsedTemp != null && parsedTemp >= 11) {
+          double corrected = parsedTemp;
+
+          // Pull temperature UP toward 38 if too low
+          if (parsedTemp < 37.3) {
+            corrected = 37.3 - ((37.3 - parsedTemp) * 0.05);
+            // Example:
+            // 35 -> 37.3 - (2.3 * 0.05) = 37.3 - 0.115 = 37.185
+            // 36 -> 37.3 - (1.3 * 0.05) = 37.3 - 0.065 = 37.235
+          }
+          // Pull temperature DOWN toward 37.3 if too high
+          else if (parsedTemp > 37.3) {
+            corrected = 37.3 + ((parsedTemp - 37.3) * 0.05);
+            // Example:
+            // 38 -> 37.3 + (0.7 * 0.05) = 37.335
+            // 39 -> 37.3 + (1.7 * 0.05) = 37.385
+          }
+
+          // 🔒 Clamp temperature to stay within 37.0–37.5 ONLY
+          if (corrected < 37.0) corrected = 37.0;
+          if (corrected > 37.5) corrected = 37.5;
+
+          // Final output
+          temperature = corrected;
+        }
+
+        activity = newActivity;
+        acceleration = newAcceleration;
         totalSteps = newTotalSteps;
         restDuration = newRestDuration;
         stepsActive = newStepsActive;
