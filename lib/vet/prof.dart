@@ -49,24 +49,6 @@ class _ShareRequest {
   });
 }
 
-class _ShareRequest {
-  final String requestId;
-  final String ownerUid;
-  final String petId;
-  final String petName;
-  final String role;
-  final String ownerEmail;
-
-  const _ShareRequest({
-    required this.requestId,
-    required this.ownerUid,
-    required this.petId,
-    required this.petName,
-    required this.role,
-    required this.ownerEmail,
-  });
-}
-
 class VetProfilePage extends StatefulWidget {
   const VetProfilePage({super.key});
 

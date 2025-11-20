@@ -4,7 +4,6 @@ import 'package:latlong2/latlong.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:geolocator/geolocator.dart';
 
 const String _databaseURL =
     'https://smartcollar-c69c1-default-rtdb.asia-southeast1.firebasedatabase.app';
@@ -20,8 +19,6 @@ class GpsTrackingPage extends StatefulWidget {
 }
 
 class _GpsTrackingPageState extends State<GpsTrackingPage> {
-  LatLng? currentLocation; // Pet location
-  LatLng? userLocation; // User's current location
   LatLng? currentLocation; // Pet location
   LatLng? userLocation; // User's current location
   late DatabaseReference gpsRef;
@@ -353,10 +350,8 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
                                   TileLayer(
                                     urlTemplate:
                                         "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-                                    "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                                     userAgentPackageName:
                                         'com.example.smartcollar_mobileapp',
-                                    maxZoom: 19,
                                     maxZoom: 19,
                                   ),
                                   if (geofenceCenter != null)
@@ -378,7 +373,6 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
                                     ),
                                   MarkerLayer(
                                     markers: [
-                                      // Pet location marker
                                       // Pet location marker
                                       Marker(
                                         point: currentLocation!,
@@ -519,7 +513,6 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: const Text(
-                          '© OpenStreetMap contributors',
                           '© OpenStreetMap contributors',
                           style: TextStyle(fontSize: 9, color: Colors.black87),
                         ),
