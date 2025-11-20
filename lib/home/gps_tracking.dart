@@ -30,6 +30,9 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
   bool selectingGeofence = false;
   bool isOutsideFence = false;
 
+  // Last seen location
+  LatLng? lastSeenLocation;
+
   // Vet locations
   bool showVets = false;
   final List<Map<String, dynamic>> vetClinics = [
@@ -156,31 +159,11 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
       gpsRef.onValue.listen((event) {
         final data = event.snapshot.value as Map?;
         if (data != null && mounted) {
-          final latStr = data['latitude']?.toString();
-          final lngStr = data['longitude']?.toString();
-
-          if (latStr != null && lngStr != null) {
-            final lat = double.tryParse(latStr);
-            final lng = double.tryParse(lngStr);
-
-            if (lat != null && lng != null && mounted) {
-              setState(() {
-                currentLocation = LatLng(lat, lng);
-              });
-
-              // Check geofence
-              if (geofenceCenter != null && geofenceRadius > 0) {
-                final distance = const Distance().as(
-                  LengthUnit.Meter,
-                  geofenceCenter!,
-                  currentLocation!,
-                );
-                setState(() {
-                  isOutsideFence = distance > geofenceRadius;
-                });
-              }
-            }
-          }
+          final lat = double.tryParse(data['latitude'].toString()) ?? 0.0;
+          final lng = double.tryParse(data['longitude'].toString()) ?? 0.0;
+          setState(() {
+            currentLocation = LatLng(lat, lng);
+          });
 
           // Check geofence status
           if (geofenceCenter != null && geofenceRadius > 0) {
@@ -293,6 +276,20 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
     }
   }
 
+  // --- Save last seen location to Firebase ---
+  // --- Toggle visibility of last seen marker ---
+  void _toggleLastSeenMarker() {
+    setState(() {
+      // If lastSeenLocation is null, try reading from currentLocation
+      // Or simply toggle showing/hiding the marker
+      if (lastSeenLocation != null) {
+        lastSeenLocation = null; // hide
+      } else if (currentLocation != null) {
+        lastSeenLocation = currentLocation; // show
+      }
+    });
+  }
+
   // --- Focus map to vet ---
   void _focusOnVet(LatLng vetLocation) {
     _mapController.move(vetLocation, 17);
@@ -339,7 +336,7 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
                                 mapController: _mapController,
                                 options: MapOptions(
                                   initialCenter: currentLocation!,
-                                  initialZoom: 15,
+                                  initialZoom: 18,
                                   onTap: (tapPosition, point) {
                                     if (selectingGeofence) {
                                       setState(() {
@@ -362,7 +359,7 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
                                       circles: [
                                         CircleMarker(
                                           point: geofenceCenter!,
-                                          radius: geofenceRadius,
+                                          radius: geofenceRadius / 2,
                                           useRadiusInMeter: true,
                                           color: isOutsideFence
                                               ? Colors.red.withOpacity(0.25)
@@ -414,6 +411,36 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
                                             ),
                                             child: const Icon(
                                               Icons.person,
+                                              color: Colors.white,
+                                              size: 28,
+                                            ),
+                                          ),
+                                        ),
+                                      // Last seen location marker
+                                      if (lastSeenLocation != null)
+                                        Marker(
+                                          point: lastSeenLocation!,
+                                          width: 50,
+                                          height: 50,
+                                          child: Container(
+                                            decoration: BoxDecoration(
+                                              color: Colors.orange,
+                                              shape: BoxShape.circle,
+                                              border: Border.all(
+                                                color: Colors.white,
+                                                width: 3,
+                                              ),
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  color: Colors.orange
+                                                      .withOpacity(0.5),
+                                                  blurRadius: 8,
+                                                  spreadRadius: 2,
+                                                ),
+                                              ],
+                                            ),
+                                            child: const Icon(
+                                              Icons.location_history,
                                               color: Colors.white,
                                               size: 28,
                                             ),
@@ -500,7 +527,7 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
                         foregroundColor: const Color(0xFFE91E63),
                         onPressed: () {
                           if (currentLocation != null) {
-                            _mapController.move(currentLocation!, 15);
+                            _mapController.move(currentLocation!, 18);
                           }
                         },
                         child: const Icon(Icons.my_location),
@@ -514,32 +541,53 @@ class _GpsTrackingPageState extends State<GpsTrackingPage> {
             // --- Controls ---
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Row(
+              child: Column(
                 children: [
-                  Expanded(
-                    child: FilledButton.icon(
-                      onPressed: () {
-                        setState(() {
-                          showVets = !showVets;
-                        });
-                      },
-                      style: FilledButton.styleFrom(
-                        backgroundColor: showVets
-                            ? Colors.blue
-                            : const Color(0xFFE91E63),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.icon(
+                          onPressed: () {
+                            setState(() {
+                              showVets = !showVets;
+                            });
+                          },
+                          style: FilledButton.styleFrom(
+                            backgroundColor: showVets
+                                ? Colors.blue
+                                : const Color(0xFFE91E63),
+                          ),
+                          icon: Icon(
+                            showVets
+                                ? Icons.visibility_off
+                                : Icons.local_hospital,
+                          ),
+                          label: Text(
+                            showVets ? 'Hide Clinics' : 'Nearby Clinics',
+                          ),
+                        ),
                       ),
-                      icon: Icon(
-                        showVets ? Icons.visibility_off : Icons.local_hospital,
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _startGeofenceSelection,
+                          icon: const Icon(Icons.shield_outlined),
+                          label: const Text('Set Geofence'),
+                        ),
                       ),
-                      label: Text(showVets ? 'Hide Clinics' : 'Nearby Clinics'),
-                    ),
+                    ],
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
                     child: OutlinedButton.icon(
-                      onPressed: _startGeofenceSelection,
-                      icon: const Icon(Icons.shield_outlined),
-                      label: const Text('Set Geofence'),
+                      onPressed: _toggleLastSeenMarker,
+                      icon: const Icon(Icons.location_history),
+                      label: const Text('Mark Last Seen'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.orange,
+                        side: const BorderSide(color: Colors.orange),
+                      ),
                     ),
                   ),
                 ],

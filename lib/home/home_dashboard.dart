@@ -289,24 +289,18 @@ class _HomeDashboardState extends State<HomeDashboard> {
         if (parsedTemp != null && parsedTemp >= 11) {
           double corrected = parsedTemp;
 
-          // Pull temperature UP toward 38 if too low
-          if (parsedTemp < 37.3) {
-            corrected = 37.3 - ((37.3 - parsedTemp) * 0.05);
-            // Example:
-            // 35 -> 37.3 - (2.3 * 0.05) = 37.3 - 0.115 = 37.185
-            // 36 -> 37.3 - (1.3 * 0.05) = 37.3 - 0.065 = 37.235
-          }
-          // Pull temperature DOWN toward 37.3 if too high
-          else if (parsedTemp > 37.3) {
-            corrected = 37.3 + ((parsedTemp - 37.3) * 0.05);
-            // Example:
-            // 38 -> 37.3 + (0.7 * 0.05) = 37.335
-            // 39 -> 37.3 + (1.7 * 0.05) = 37.385
+          const double target = 37.7; // center of the range
+          const double pullStrength =
+              0.05; // how strongly values move toward target
+
+          // Pull temperature TOWARD 37.7 smoothly
+          if (parsedTemp != target) {
+            corrected = target + ((parsedTemp - target) * pullStrength);
           }
 
-          // 🔒 Clamp temperature to stay within 37.0–37.5 ONLY
-          if (corrected < 37.0) corrected = 37.0;
-          if (corrected > 37.5) corrected = 37.5;
+          // Clamp final temp to 37.5–37.9 range
+          if (corrected < 37.5) corrected = 37.5;
+          if (corrected > 37.9) corrected = 37.9;
 
           // Final output
           temperature = corrected;
